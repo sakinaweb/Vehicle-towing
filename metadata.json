@@ -1,0 +1,6 @@
+{
+  "name": "TowNow UAE Towing Marketplace",
+  "description": "On-demand towing and roadside assistance marketplace UI for Dubai & Abu Dhabi, featuring Customer App, Driver Partner App, and Admin Operations Console.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

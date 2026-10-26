@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+/*
+ * TowNow design tokens — the same palette as the Flutter apps
+ * (mobile/townow_core/lib/src/ui/design.dart) and the admin dashboard (admin/app/globals.css).
+ * Use these names (bg-surface, text-ink, border-line, bg-lime, text-navy …), not raw Tailwind colours.
+ */
+@theme {
+  --color-navy: #101827; /* Midnight Navy — primary text accents, selected states */
+  --color-navy-deep: #17243a;
+  --color-lime: #c8f34a; /* TowNow Lime — primary actions (with navy text) */
+  --color-canvas: #f5f7fa; /* page background */
+  --color-surface: #ffffff; /* cards, sheets, bars */
+  --color-ink: #182230; /* body text */
+  --color-muted: #697586; /* secondary text */
+  --color-line: #e4e7ec; /* borders, dividers */
+  --color-success: #16865b;
+  --color-warning: #b7791f;
+  --color-danger: #d64545;
+  --color-info: #1d4ed8;
+
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Custom utility for tabular numbers */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thin scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(105, 117, 134, 0.35);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(105, 117, 134, 0.55);
+}

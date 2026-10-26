@@ -1,0 +1,138 @@
+# TowNow production stack for one Ubuntu LTS VPS (architecture plan §9).
+#
+#   cp .env.example .env            # fill in every value (never commit .env)
+#   docker compose up -d --build
+#
+# Only Nginx publishes ports (80/443). PostgreSQL, Redis, the API, the worker and the
+# admin dashboard are reachable only on the private "backend" network.
+# The development stack (backend/docker-compose.yml) is separate and unchanged.
+name: townow-prod
+
+x-api-env: &api-env
+  NODE_ENV: production
+  DATABASE_HOST: postgres
+  DATABASE_PORT: 5432
+  DATABASE_NAME: ${DATABASE_NAME:-townow}
+  DATABASE_USER: ${DATABASE_USER:-townow}
+  DATABASE_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-townow}
+      POSTGRES_USER: ${DATABASE_USER:-townow}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Password auth, AOF persistence (queued jobs survive restarts), noeviction (BullMQ).
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes --maxmemory-policy noeviction
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # REST + Socket.IO. Runs migrations on start (Dockerfile CMD). No background workers here.
+  api:
+    build: ../backend
+    image: townow-api:${TOWNOW_VERSION:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *api-env
+      RUN_WORKERS: "false"
+      TRUST_PROXY: 1
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  # BullMQ workers (matching, offer timeouts, payments, push) in their own container.
+  worker:
+    image: townow-api:${TOWNOW_VERSION:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *api-env
+    command: ["node", "dist/worker.js"]
+    networks: [backend]
+    depends_on:
+      api: { condition: service_healthy } # api applies migrations first
+    healthcheck:
+      disable: true # no HTTP port; restart policy + logs cover it
+
+  admin:
+    build:
+      context: ..
+      dockerfile: admin/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://${API_DOMAIN:?set API_DOMAIN}/api/v1
+    image: townow-admin:${TOWNOW_VERSION:-latest}
+    restart: unless-stopped
+    networks: [backend]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN}
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN:?set ADMIN_DOMAIN}
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      # TLS certificates (e.g. Let's Encrypt): fullchain.pem + privkey.pem per domain.
+      - ${CERTS_DIR:-./certs}:/etc/nginx/certs:ro
+      - ./nginx/acme:/var/www/acme:ro
+    networks: [backend]
+    depends_on: [api, admin]
+
+  # Nightly compressed pg_dump, 14 days kept on the VPS. Copy ./backups off the server
+  # (plan §12: off-server backups + restore drills) with your provider's tooling.
+  backup:
+    image: postgis/postgis:16-3.4-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${DATABASE_NAME:-townow}
+      PGUSER: ${DATABASE_USER:-townow}
+      PGPASSWORD: ${DATABASE_PASSWORD:?set DATABASE_PASSWORD}
+      KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backups:/backups
+      - ./backup.sh:/backup.sh:ro
+    entrypoint: ["sh", "/backup.sh"]
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+networks:
+  backend:
+
+volumes:
+  postgres-data:
+  redis-data:

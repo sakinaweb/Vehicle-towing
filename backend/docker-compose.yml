@@ -1,0 +1,60 @@
+# Local development infrastructure for the TowNow API.
+#   docker compose up -d                 → PostgreSQL/PostGIS + Redis
+#   docker compose --profile api up -d   → also builds and runs the API container
+name: townow
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DATABASE_USER:-townow}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-change-me}
+      POSTGRES_DB: ${DATABASE_NAME:-townow}
+    ports:
+      - "127.0.0.1:${DATABASE_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF persistence so queued jobs survive a restart; noeviction is required by BullMQ.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6380}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    profiles: ["api"]
+    build: .
+    image: townow-api:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "127.0.0.1:${PORT:-4000}:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
