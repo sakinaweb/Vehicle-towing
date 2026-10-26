@@ -5,5 +5,5 @@ coverage
 .env
 .env.*
 !.env.example
-storage
-.e2e-storage
+/storage
+/.e2e-storage
