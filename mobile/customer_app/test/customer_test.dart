@@ -1,12 +1,14 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:townow_core/townow_core.dart';
 import 'package:townow_customer/screens/completed_screen.dart';
 import 'package:townow_customer/screens/home_screen.dart';
+import 'package:townow_customer/screens/request_screen.dart';
 import 'package:townow_customer/screens/tracking_screen.dart';
 
 Map<String, dynamic> booking({
@@ -102,6 +104,19 @@ Widget host(ApiClient api, Widget child) => AppScope(
 );
 
 void main() {
+  // No GPS in tests: the phone reports Location turned off (the manual pickup path).
+  setUp(() {
+    for (final name in [
+      'flutter.baseflow.com/geolocator',
+      'flutter.baseflow.com/geolocator_android',
+    ]) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        MethodChannel(name),
+        (call) async => call.method == 'isLocationServiceEnabled' ? false : null,
+      );
+    }
+  });
+
   testWidgets('home shows the active tow and the request button', (tester) async {
     phone(tester);
     final api = FakeApi({
@@ -167,6 +182,182 @@ void main() {
     expect(find.text('Cancelled'), findsWidgets);
     expect(find.byKey(const Key('cancel')), findsNothing);
     await tester.pumpWidget(const SizedBox()); // stop the poll timer
+  });
+
+  testWidgets('books in a few taps: saved vehicle, pinned pickup, recent destination', (
+    tester,
+  ) async {
+    phone(tester);
+    Map<String, dynamic>? quoted;
+    var booked = 0;
+    final api = FakeApi({
+      'GET /customers/me/vehicles': (_) => [booking()['vehicle']],
+      'GET /bookings': (_) => {
+        'items': [booking(status: 'completed', canCancel: false)],
+        'total': 1,
+        'page': 1,
+        'limit': 50,
+      },
+      'GET /availability/nearby': (_) => {'total': 0, 'byTowType': <String, dynamic>{}},
+      'POST /bookings/quotes': (req) {
+        quoted = jsonDecode(req.body) as Map<String, dynamic>;
+        return {
+          'quoteId': 'q1',
+          'expiresAt': DateTime.now().add(const Duration(minutes: 15)).toIso8601String(),
+          'vehicleId': 'v1',
+          'towType': quoted!['towType'],
+          'pickup': quoted!['pickup'],
+          'dropoff': quoted!['dropoff'],
+          'distanceMeters': 9100,
+          'estimatedDurationSeconds': 900,
+          'distanceSource': 'straight_line',
+          'fare': booking()['fare'],
+        };
+      },
+      'POST /bookings': (req) {
+        booked++;
+        expect(jsonDecode(req.body), {
+          'quoteId': 'q1',
+          'issue': 'Breakdown',
+          'paymentMethod': 'cash',
+        });
+        return booking(status: 'requested');
+      },
+      'GET /bookings/b1': (_) => booking(status: 'requested'),
+      'GET /bookings/b1/driver-location': (_) => {
+        'bookingId': 'b1',
+        'status': 'requested',
+        'location': null,
+        'eta': {'target': 'pickup', 'status': 'unavailable', 'reason': 'no_driver'},
+      },
+    });
+    await tester.pumpWidget(host(api.client(), const RequestScreen()));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // Saved vehicle preselected; no GPS in tests → manual pickup is offered.
+    expect(find.textContaining('pin your pickup'), findsOneWidget);
+    expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('use-location')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.byKey(const Key('pickup-map')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.enterText(find.byKey(const Key('pin-lat')), '25.08');
+    await tester.enterText(find.byKey(const Key('pin-lng')), '55.14');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('use-point')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    await tester.ensureVisible(find.byKey(const Key('recent-0')));
+    await tester.tap(find.byKey(const Key('recent-0')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(quoted!['towType'], 'flatbed');
+    expect(quoted!['vehicleId'], 'v1');
+    expect(quoted!['pickup'], {
+      'lat': 25.08,
+      'lng': 55.14,
+      'address': 'Map pin 25.08000, 55.14000',
+    });
+    expect(quoted!['dropoff'], {'lat': 25.12, 'lng': 55.2, 'address': 'Al Quoz garage'});
+    expect(find.text('VAT 5.0%'), findsOneWidget);
+    expect(find.text('Confirm booking · AED 253.28'), findsOneWidget);
+
+    // A double tap books once.
+    await tester.tap(find.byKey(const Key('book')));
+    await tester.tap(find.byKey(const Key('book')), warnIfMissed: false);
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(booked, 1);
+    expect(find.text('TN-100400'), findsOneWidget); // tracking screen title
+    await tester.pumpWidget(const SizedBox()); // stop map / poll timers
+  });
+
+  testWidgets('destination search shows results while typing; one tap picks one', (tester) async {
+    phone(tester);
+    final queries = <String>[];
+    final api = FakeApi({
+      'GET /customers/me/vehicles': (_) => [booking()['vehicle']],
+      'GET /bookings': (_) => {'items': <Object>[], 'total': 0, 'page': 1, 'limit': 50},
+      'GET /locations/search': (req) {
+        queries.add(req.url.queryParameters['q']!);
+        return {
+          'status': 'available',
+          'results': [
+            {'lat': 25.13, 'lng': 55.22, 'address': 'Al Quoz Industrial Area 3, Dubai'},
+          ],
+        };
+      },
+    });
+    await tester.pumpWidget(host(api.client(), const RequestScreen()));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    await tester.tap(find.byKey(const Key('search-destination')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.enterText(find.byKey(const Key('place-search')), 'Al');
+    await tester.pump(const Duration(seconds: 1));
+    expect(queries, isEmpty); // under 3 letters: no request
+    await tester.enterText(find.byKey(const Key('place-search')), 'Al Qu');
+    await tester.enterText(find.byKey(const Key('place-search')), 'Al Quoz');
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+    expect(queries, ['Al Quoz']); // debounced: only the last text is searched
+    expect(find.byKey(const Key('search-pin')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('place-0')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('Al Quoz Industrial Area 3, Dubai'), findsWidgets);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a failing quote shows the error with retry and blocks booking', (tester) async {
+    phone(tester);
+    final api = FakeApi({
+      'GET /customers/me/vehicles': (_) => [booking()['vehicle']],
+      'GET /bookings': (_) => {
+        'items': [booking(status: 'completed', canCancel: false)],
+        'total': 1,
+        'page': 1,
+        'limit': 50,
+      },
+      // POST /bookings/quotes not mocked → the API answers with an error.
+    });
+    await tester.pumpWidget(host(api.client(), const RequestScreen()));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const Key('use-location')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.tap(find.byKey(const Key('pickup-map')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.enterText(find.byKey(const Key('pin-lat')), '25.08');
+    await tester.enterText(find.byKey(const Key('pin-lng')), '55.14');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('use-point')));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.ensureVisible(find.byKey(const Key('recent-0')));
+    await tester.tap(find.byKey(const Key('recent-0')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.textContaining('not mocked: POST /bookings/quotes'), findsOneWidget);
+    expect(find.text('Try again'), findsOneWidget);
+    final book = tester.widget<TnButton>(find.byKey(const Key('book')));
+    expect(book.onPressed, isNull);
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('completed tow shows the receipt (not a tax invoice) and rates once', (tester) async {

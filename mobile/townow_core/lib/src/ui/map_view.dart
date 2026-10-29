@@ -36,7 +36,13 @@ const _dubai = LatLng(25.2048, 55.2708);
 /// OpenStreetMap tiles by default (tile URL configurable in [TowNowConfig.mapTileUrl]);
 /// Google Maps instead when GOOGLE_MAPS_ENABLED and a key are configured.
 class MapView extends StatelessWidget {
-  const MapView({super.key, required this.markers, this.height = 260, this.onLongPress});
+  const MapView({
+    super.key,
+    required this.markers,
+    this.height = 260,
+    this.onLongPress,
+    this.onTap,
+  });
 
   /// The app's identity for tile requests (OSM tile policy blocks generic User-Agents).
   /// Each app sets it in main().
@@ -48,6 +54,9 @@ class MapView extends StatelessWidget {
   /// Lets the user pick a point (e.g. the destination).
   final void Function(double lat, double lng)? onLongPress;
 
+  /// Same as [onLongPress] for a plain tap (map pickers).
+  final void Function(double lat, double lng)? onTap;
+
   @override
   Widget build(BuildContext context) {
     return SizedBox(
@@ -56,7 +65,7 @@ class MapView extends StatelessWidget {
         borderRadius: BorderRadius.circular(TnRadius.lg),
         child: TowNowConfig.mapsEnabled
             ? _google()
-            : _OsmMap(markers: markers, onLongPress: onLongPress),
+            : _OsmMap(markers: markers, onLongPress: onLongPress, onTap: onTap),
       ),
     );
   }
@@ -70,6 +79,7 @@ class MapView extends StatelessWidget {
       myLocationEnabled: true,
       myLocationButtonEnabled: true,
       onLongPress: onLongPress == null ? null : (p) => onLongPress!(p.latitude, p.longitude),
+      onTap: onTap == null ? null : (p) => onTap!(p.latitude, p.longitude),
       markers: {
         for (final m in markers)
           gm.Marker(
@@ -88,10 +98,11 @@ class MapView extends StatelessWidget {
 enum _TileState { loading, loaded, failed }
 
 class _OsmMap extends StatefulWidget {
-  const _OsmMap({required this.markers, this.onLongPress});
+  const _OsmMap({required this.markers, this.onLongPress, this.onTap});
 
   final List<MapMarker> markers;
   final void Function(double lat, double lng)? onLongPress;
+  final void Function(double lat, double lng)? onTap;
 
   @override
   State<_OsmMap> createState() => _OsmMapState();
@@ -159,6 +170,7 @@ class _OsmMapState extends State<_OsmMap> {
   Widget build(BuildContext context) {
     final points = [for (final m in widget.markers) LatLng(m.lat, m.lng)];
     final onLongPress = widget.onLongPress;
+    final onTap = widget.onTap;
     return Stack(
       children: [
         FlutterMap(
@@ -173,7 +185,10 @@ class _OsmMapState extends State<_OsmMap> {
                     maxZoom: 15,
                   )
                 : null,
-            onLongPress: onLongPress == null ? null : (_, p) => onLongPress(p.latitude, p.longitude),
+            onLongPress: onLongPress == null
+                ? null
+                : (_, p) => onLongPress(p.latitude, p.longitude),
+            onTap: onTap == null ? null : (_, p) => onTap(p.latitude, p.longitude),
           ),
           children: [
             TileLayer(
@@ -248,7 +263,11 @@ class _MapNotice extends StatelessWidget {
           Flexible(
             child: Text(
               failed ? 'Map couldn\'t load. Check your connection.' : 'Loading map…',
-              style: const TextStyle(color: TnColors.text, fontSize: 12, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                color: TnColors.text,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
           if (failed) TextButton(onPressed: onRetry, child: const Text('Retry')),

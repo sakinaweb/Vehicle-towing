@@ -13,6 +13,9 @@ export default defineConfig({
     // own Redis DB (rate limits, denylist) and own queue prefix.
     env: {
       NODE_ENV: 'test',
+      // Own database: the tests write and clean up rows, never touch the dev database.
+      // One-time setup: createdb townow_test && DATABASE_NAME=townow_test npm run migration:run
+      DATABASE_NAME: 'townow_test',
       REDIS_DB: '1',
       QUEUE_PREFIX: 'townow-e2e',
       OTP_IP_HOURLY_LIMIT: '1000',

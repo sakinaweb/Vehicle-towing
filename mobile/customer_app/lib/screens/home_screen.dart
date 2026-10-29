@@ -23,12 +23,22 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _error;
   NearbyAvailability? _nearby;
   _NearbyState _nearbyState = _NearbyState.loading;
+  // Booking a tow replaces the request screen with tracking, so returning from it never
+  // reaches _open's reload: status changes (cancel, driver assigned…) refresh the list here.
+  late final void Function() _unsubscribe;
 
   @override
   void initState() {
     super.initState();
+    _unsubscribe = context.realtime.on(RealtimeEvents.bookingUpdated, (_) => _load());
     _load();
     _loadNearby(prompt: false);
+  }
+
+  @override
+  void dispose() {
+    _unsubscribe();
+    super.dispose();
   }
 
   Future<void> _load() async {
