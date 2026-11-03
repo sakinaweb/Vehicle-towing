@@ -9,7 +9,7 @@ import 'tracking_screen.dart';
 import 'vehicles_screen.dart';
 
 /// One screen: vehicle → pickup (GPS by default) → destination → service, with a live server
-/// quote and a single confirm (cash). The fare always comes from the server; the app never
+/// quote and a single confirm (cash, or card when the server offers it). The fare always comes from the server; the app never
 /// calculates a price.
 class RequestScreen extends StatefulWidget {
   const RequestScreen({super.key, this.initialTowType});
@@ -41,13 +41,25 @@ class _RequestScreenState extends State<RequestScreen> {
   bool _quoting = false;
   int _quoteSeq = 0; // drops answers to superseded quote requests
   bool _booked = false;
+  bool _cardAvailable = false; // only when the server says it accepts card
+  String _paymentMethod = 'cash';
 
   @override
   void initState() {
     super.initState();
     _loadVehicles();
     _loadRecent();
+    _loadPaymentMethods();
     _locate(replace: false);
+  }
+
+  Future<void> _loadPaymentMethods() async {
+    try {
+      final methods = await context.api.paymentMethods();
+      if (mounted) setState(() => _cardAvailable = methods.contains('card'));
+    } on ApiException {
+      // Unknown → cash only, exactly as before.
+    }
   }
 
   @override
@@ -299,16 +311,25 @@ class _RequestScreenState extends State<RequestScreen> {
       }
     }
     final quoteId = q.quoteId;
+    final method = _cardAvailable ? _paymentMethod : 'cash';
     final navigator = Navigator.of(context);
     // The button stays busy while this runs, [_booked] covers taps during the page
     // transition, and the server books each quote only once.
     final booking = await context.guard(
-      () => context.api.book(quoteId: quoteId, issue: _issue, notes: _notes.text.trim()),
+      () => context.api.book(
+        quoteId: quoteId,
+        issue: _issue,
+        notes: _notes.text.trim(),
+        paymentMethod: method,
+      ),
     );
     if (booking != null && mounted) {
       _booked = true;
       navigator.pushReplacement(
-        MaterialPageRoute<void>(builder: (_) => TrackingScreen(bookingId: booking.id)),
+        MaterialPageRoute<void>(
+          // Card: the tracking screen opens the card form straight away.
+          builder: (_) => TrackingScreen(bookingId: booking.id, payNow: method == 'card'),
+        ),
       );
     }
   }
@@ -629,12 +650,43 @@ class _RequestScreenState extends State<RequestScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          const InfoRow(
-            icon: Icons.payments_rounded,
-            iconBg: TnColors.lime,
-            title: 'Cash on delivery',
-            subtitle: 'Pay the driver when your vehicle is delivered',
-          ),
+          if (!_cardAvailable)
+            const InfoRow(
+              icon: Icons.payments_rounded,
+              iconBg: TnColors.lime,
+              title: 'Cash on delivery',
+              subtitle: 'Pay the driver when your vehicle is delivered',
+            )
+          else ...[
+            const Text('How will you pay?', style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              children: [
+                ChoiceChip(
+                  key: const Key('pay-cash'),
+                  avatar: const Icon(Icons.payments_rounded, size: 18),
+                  label: const Text('Cash'),
+                  selected: _paymentMethod == 'cash',
+                  onSelected: (_) => setState(() => _paymentMethod = 'cash'),
+                ),
+                ChoiceChip(
+                  key: const Key('pay-card'),
+                  avatar: const Icon(Icons.credit_card_rounded, size: 18),
+                  label: const Text('Card'),
+                  selected: _paymentMethod == 'card',
+                  onSelected: (_) => setState(() => _paymentMethod = 'card'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _paymentMethod == 'cash'
+                  ? 'Pay the driver when your vehicle is delivered'
+                  : 'Your card is held now and charged only after delivery',
+              style: const TextStyle(color: TnColors.muted, fontSize: 13),
+            ),
+          ],
         ],
       ),
     );

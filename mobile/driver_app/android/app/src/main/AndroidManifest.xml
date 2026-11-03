@@ -13,6 +13,7 @@
     <application
         android:label="TowNow Driver"
         android:name="${applicationName}"
+        android:usesCleartextTraffic="${usesCleartextTraffic}"
         android:icon="@mipmap/ic_launcher">
         <!-- Google Maps key: MAPS_API_KEY Gradle property or environment variable. -->
         <meta-data android:name="com.google.android.geo.API_KEY" android:value="${MAPS_API_KEY}" />

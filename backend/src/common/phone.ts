@@ -36,6 +36,20 @@ export function normalizeIndiaMobile(input: unknown): string | null {
 
 export const isUaeMobileE164 = (phone: string): boolean => /^\+9715[024568]\d{7}$/.test(phone);
 
+/**
+ * E.164 mobile ranges per supported sign-in country (keys = OTP_COUNTRIES values).
+ * ponytail: hand-kept table; switch to libphonenumber-js once more than a few countries are needed.
+ */
+const MOBILE_E164: Record<string, RegExp> = {
+  AE: /^\+9715[024568]\d{7}$/,
+  IN: /^\+91[6-9]\d{9}$/,
+};
+
+/** ISO country of a normalised E.164 mobile number, or null if it is in no supported range. */
+export function mobileCountry(e164: string): string | null {
+  return Object.keys(MOBILE_E164).find((iso) => MOBILE_E164[iso].test(e164)) ?? null;
+}
+
 /** "+971501234567" → "+971 50 123 4567" for display and SMS text. */
 export function formatUaeMobile(e164: string): string {
   const n = e164.replace(/^\+971/, '');

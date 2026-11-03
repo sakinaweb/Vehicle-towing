@@ -23,7 +23,7 @@ Future<String> otpFor(String phone, DateTime after) async {
   final tail = phone.substring(phone.length - 2);
   final re = RegExp(r'SMS to \+97158\*{5}' + tail + r'.*?code is (\d{6})');
   for (var i = 0; i < 40; i++) {
-    final text = File(log!).readAsStringSync().replaceAll(RegExp(r'\x1b\[[0-9;]*m'), '');
+    final text = _readLog().replaceAll(RegExp(r'\x1b\[[0-9;]*m'), '');
     final matches = re.allMatches(text).toList();
     if (matches.isNotEmpty && File(log!).lastModifiedSync().isAfter(after)) {
       return matches.last.group(1)!;
@@ -33,12 +33,39 @@ Future<String> otpFor(String phone, DateTime after) async {
   throw StateError('No OTP for $phone in the API log');
 }
 
+/// The API log as text; Windows PowerShell's Tee-Object writes UTF-16 LE (with a BOM).
+String _readLog() {
+  final bytes = File(log!).readAsBytesSync();
+  if (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) {
+    final units = <int>[
+      for (var i = 2; i + 1 < bytes.length; i += 2) bytes[i] | (bytes[i + 1] << 8),
+    ];
+    return String.fromCharCodes(units);
+  }
+  return utf8.decode(bytes, allowMalformed: true);
+}
+
+/// With the API's demo login on (DEMO_LOGIN_PHONES), the customer and driver codes are not
+/// logged; pass the same code as LIVE_DEMO_CODE. Every other number still reads the log.
+final _demoCode = Platform.environment['LIVE_DEMO_CODE'];
+
 Future<ApiClient> signIn(String phone, String role) async {
   final api = ApiClient(baseUrl: base!, sessions: MemorySessionStore(), role: role);
   final before = DateTime.now().subtract(const Duration(seconds: 1));
   await api.requestOtp(phone);
-  await api.verifyOtp(phone, await otpFor(phone, before));
+  final demo = _demoCode != null && (phone == customerPhone || phone == driverPhone);
+  await api.verifyOtp(phone, demo ? _demoCode! : await otpFor(phone, before));
   return api;
+}
+
+/// LIVE_PAUSE_SECONDS=N pauses after each phase, so the apps on a phone signed in with the same
+/// test accounts can be watched (or screenshotted) while the flow runs.
+final _pause = int.tryParse(Platform.environment['LIVE_PAUSE_SECONDS'] ?? '') ?? 0;
+Future<void> hold(String step) async {
+  if (_pause == 0) return;
+  // ignore: avoid_print
+  print('LIVE STEP ${DateTime.now().toIso8601String().substring(11, 19)} $step');
+  await Future<void>.delayed(Duration(seconds: _pause));
 }
 
 Future<T> waitFor<T>(Future<T?> Function() fn, {int seconds = 30}) async {
@@ -84,11 +111,14 @@ void main() {
           'plateNumber': '40422',
         });
       }
+      // Re-runs: an approved driver's documents are locked (and already on file).
       for (final t in [
-        'emirates_id',
-        'driving_licence',
-        'vehicle_registration',
-        'commercial_insurance',
+        if (profile.kycStatus != 'approved') ...[
+          'emirates_id',
+          'driving_licence',
+          'vehicle_registration',
+          'commercial_insurance',
+        ],
       ]) {
         await driver.uploadDocument(
           t,
@@ -154,17 +184,64 @@ void main() {
       );
       expect(booking.fare.totalFils, quote.fare.totalFils); // server price is kept
 
-      // ---- dispatch: offer reaches the driver (REST + socket via the worker)
+      // ---- dispatch: offer reaches the driver (REST + socket via the worker).
+      // The test position is re-sent while waiting: if this driver is also signed in on a phone
+      // elsewhere, that phone's real GPS would otherwise move them out of the pickup area.
       final offer = await waitFor(() async {
+        await driver.postLocation(24.79, 56.11);
         final o = await driver.currentOffer();
         return o?.bookingId == booking.id ? o : null;
-      });
+      }, seconds: 60);
       expect(
         offer.driverPayoutFils,
         quote.fare.subtotalFils - (quote.fare.subtotalFils * 0.2).round(),
       ); // 20%
       final job = await driver.acceptOffer(offer.offerId!);
       expect(job.status, 'driver_assigned');
+      await hold('driver assigned ${booking.bookingNumber}');
+
+      // ---- chat: customer → driver live, reply, read receipt, history
+      final driverChat = <Json>[];
+      final customerReads = <Json>[];
+      driverRt.on(RealtimeEvents.chatMessage, driverChat.add);
+      customerRt.on(RealtimeEvents.chatRead, customerReads.add);
+      final hello = await customer.sendChat(
+        booking.id,
+        'Hi, I am at the Hatta Dam car park gate (live test)',
+        newClientId(),
+      );
+      expect(hello.mine, isTrue);
+      final got = await waitFor(
+        () async => driverChat.where((m) => m['id'] == hello.id).firstOrNull,
+        seconds: 10,
+      );
+      expect(got['mine'], isFalse);
+      await driver.sendChat(booking.id, 'On my way, about 10 minutes (live test)', newClientId());
+      await driver.markChatRead(booking.id);
+      await waitFor(() async => customerReads.isNotEmpty ? true : null, seconds: 10);
+      final history = await customer.chatMessages(booking.id);
+      expect(history.map((m) => m.mine), [true, false]);
+      expect(history.first.readAt, isNotNull);
+      await hold('chat exchanged');
+
+      // ---- SOS from the driver on the job → operations acknowledge and resolve it
+      final sos = await driver.raiseSos(
+        bookingId: booking.id,
+        lat: 24.79,
+        lng: 56.11,
+        note: 'Live test SOS',
+      );
+      expect(sos['status'], 'open');
+      expect(sos['bookingNumber'], booking.bookingNumber);
+      await admin.send('POST', '/admin/sos/${sos['id']}/acknowledge');
+      final closed =
+          await admin.send(
+                'POST',
+                '/admin/sos/${sos['id']}/resolve',
+                body: {'resolution': 'Live test'},
+              )
+              as Json;
+      expect(closed['status'], 'resolved');
 
       // ---- trip with inspections
       await driver.advance(booking.id, 'en-route');
@@ -172,6 +249,7 @@ void main() {
       final live = await customer.driverLocation(booking.id);
       expect(live.location, isNotNull); // real driver position, not invented
       await driver.advance(booking.id, 'arrived');
+      await hold('driver arrived');
       for (final stage in ['pickup', 'return']) {
         if (stage == 'return') await driver.advance(booking.id, 'start-tow');
         await driver.saveInspection(booking.id, stage, {
@@ -189,6 +267,7 @@ void main() {
       final done = await driver.advance(booking.id, 'complete');
       expect(done.status, 'completed');
       await driver.confirmCash(booking.id, done.fareTotalFils);
+      await hold('completed, cash collected');
 
       // ---- customer side
       final completed = await customer.booking(booking.id);
@@ -237,7 +316,7 @@ void main() {
         'statuses=$statuses dispute=${dispute.id}',
       );
     },
-    timeout: const Timeout(Duration(minutes: 3)),
+    timeout: const Timeout(Duration(minutes: 6)),
     skip: base == null ? 'set LIVE_API to run' : false,
   );
 }

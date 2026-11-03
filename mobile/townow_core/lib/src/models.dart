@@ -103,10 +103,27 @@ class PaymentSummary {
   PaymentSummary.fromJson(Json j)
     : method = j['method'] as String,
       status = j['status'] as String,
-      amountFils = _int(j['amountFils']);
+      amountFils = _int(j['amountFils']),
+      failureReason = j['failureReason'] as String?;
 
   final String method, status;
   final int amountFils;
+  final String? failureReason;
+}
+
+/// What the card form needs. The publishable key comes from the server, so the app never
+/// ships a key and follows the server's test / live mode.
+class PaymentSession {
+  PaymentSession.fromJson(Json j)
+    : status = j['status'] as String,
+      amountFils = _int(j['amountFils']),
+      currency = j['currency'] as String,
+      clientSecret = j['clientSecret'] as String?,
+      publishableKey = j['publishableKey'] as String;
+
+  final String status, currency, publishableKey;
+  final int amountFils;
+  final String? clientSecret;
 }
 
 class StatusChange {
@@ -400,4 +417,45 @@ class NearbyAvailability {
   final Map<String, ({int available, int? nearestMeters})> byTowType;
 
   int get total => byTowType.values.fold(0, (a, b) => a + b.available);
+}
+
+// ---------------------------------------------------------------- chat
+
+/// Delivery state the chat screen shows next to my own messages.
+enum ChatDelivery { sending, failed, sent, read }
+
+class ChatMessage {
+  ChatMessage({
+    required this.id,
+    required this.bookingId,
+    required this.clientId,
+    required this.senderRole,
+    required this.mine,
+    required this.body,
+    required this.createdAt,
+    this.readAt,
+    this.delivery = ChatDelivery.sent,
+  });
+
+  factory ChatMessage.fromJson(Json j) => ChatMessage(
+    id: j['id'] as String,
+    bookingId: j['bookingId'] as String,
+    clientId: j['clientId'] as String?,
+    senderRole: j['senderRole'] as String,
+    mine: j['mine'] as bool? ?? false,
+    body: j['body'] as String,
+    createdAt: DateTime.parse(j['createdAt'] as String).toLocal(),
+    readAt: j['readAt'] == null ? null : DateTime.parse(j['readAt'] as String).toLocal(),
+    delivery: j['readAt'] == null ? ChatDelivery.sent : ChatDelivery.read,
+  );
+
+  final String id;
+  final String bookingId;
+  final String? clientId;
+  final String senderRole;
+  final bool mine;
+  final String body;
+  final DateTime createdAt;
+  DateTime? readAt;
+  ChatDelivery delivery;
 }

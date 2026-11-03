@@ -6,6 +6,7 @@ import { UserRole, UserStatus } from '../../common/enums.js';
 import { normalizeUaeMobile } from '../../common/phone.js';
 import type { AppConfigService } from '../../config/app-config.service.js';
 import { LogSmsProvider } from '../../infrastructure/sms/log-sms.provider.js';
+import { SmsDeliveryError } from '../../infrastructure/sms/sms-provider.js';
 import { AuthService } from './auth.service.js';
 import { RequestOtpDto, VerifyOtpDto } from './dto.js';
 import { OtpService } from './otp.service.js';
@@ -23,6 +24,7 @@ interface Row {
   expiresAt: Date;
   consumedAt: Date | null;
   attempts: number;
+  externalCheck?: boolean;
 }
 
 function fakeChallenges() {
@@ -97,6 +99,7 @@ const config = {
     resendCooldownSeconds: 30,
     phoneHourlyLimit: 5,
     ipHourlyLimit: 30,
+    countries: ['AE'],
   },
 } as unknown as AppConfigService;
 
@@ -251,5 +254,123 @@ describe('development Indian (+91) numbers via DEV_ALLOW_INDIA_PHONES', () => {
     expect(otp.verify).toHaveBeenCalledWith(india, '123456'); // code checked first
     expect(em.update).not.toHaveBeenCalled();
     expect(tokens.startSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('OTP_COUNTRIES', () => {
+  it('signs in +91 when IN is listed, without the dev flag', async () => {
+    const withIn = {
+      otp: { ...config.otp, countries: ['AE', 'IN'] },
+    } as unknown as AppConfigService;
+    const { otp, loggedCode } = setup(withIn);
+    await otp.issue('+919876543210', null);
+    await expect(otp.verify('+919876543210', loggedCode().code!)).resolves.toBeUndefined();
+  });
+
+  it('refuses UAE numbers when AE is not listed', async () => {
+    const onlyIn = { otp: { ...config.otp, countries: ['IN'] } } as unknown as AppConfigService;
+    const { otp } = setup(onlyIn);
+    await expect(otp.issue('+971501234567', null)).rejects.toThrow(/valid UAE mobile/);
+  });
+});
+
+describe('Twilio Verify with a backup SMS provider', () => {
+  const phone = '+971501234567';
+
+  function withVerify(startFails: boolean) {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const backup = {
+      name: 'infobip',
+      send: vi.fn().mockResolvedValue({ providerMessageId: 'b1' }),
+    };
+    const verifier = {
+      name: 'twilio_verify',
+      start: startFails
+        ? vi.fn().mockRejectedValue(new SmsDeliveryError('Verify down', 'twilio_verify', 60200))
+        : vi.fn().mockResolvedValue(undefined),
+      check: vi.fn().mockResolvedValue('approved'),
+    };
+    const challenges = fakeChallenges();
+    const otp = new OtpService(challenges as never, fakeRedis() as never, backup, config, verifier);
+    const sentCode = () =>
+      /code is (\d{6})/.exec(String(backup.send.mock.calls.at(-1)?.[0]?.body))?.[1];
+    return { otp, backup, verifier, challenges, sentCode, warn };
+  }
+
+  it('Verify works: no backup SMS, Twilio checks the code', async () => {
+    const { otp, backup, verifier, challenges } = withVerify(false);
+    await otp.issue(phone, null);
+    expect(backup.send).not.toHaveBeenCalled();
+    expect(challenges.rows[0].externalCheck).toBe(true);
+    await expect(otp.verify(phone, '123456')).resolves.toBeUndefined();
+    expect(verifier.check).toHaveBeenCalledWith(phone, '123456');
+  });
+
+  it('Verify fails: the backup delivers the one local code, checked locally, never by Twilio', async () => {
+    const { otp, backup, verifier, challenges, sentCode, warn } = withVerify(true);
+    await otp.issue(phone, null);
+    expect(backup.send).toHaveBeenCalledOnce();
+    expect(challenges.rows[0].externalCheck).toBe(false);
+    const code = sentCode()!;
+    expect(code).toMatch(/^\d{6}$/);
+    expect(String(warn.mock.calls.at(-1)?.[0])).not.toContain(code); // OTP never logged
+
+    const wrong = code === '000000' ? '111111' : '000000';
+    await expect(otp.verify(phone, wrong)).rejects.toThrow('Incorrect code. 4 attempts left.');
+    await expect(otp.verify(phone, code)).resolves.toBeUndefined();
+    expect(verifier.check).not.toHaveBeenCalled();
+  });
+
+  it('Verify and backup both fail: 503, and the code row is retired', async () => {
+    const { otp, backup, challenges } = withVerify(true);
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    backup.send.mockRejectedValue(new SmsDeliveryError('no route', 'infobip'));
+    await expect(otp.issue(phone, null)).rejects.toThrow(/could not send the SMS/);
+    expect(challenges.rows[0].expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+describe('demo login (DEMO_LOGIN_PHONES + DEMO_LOGIN_CODE)', () => {
+  const demoCode = '482917'; // test value only
+  const demoPhone = '+971589990411';
+  const other = '+971589990499';
+  const withDemo = {
+    otp: { ...config.otp, demoPhones: [demoPhone], demoCode },
+  } as unknown as AppConfigService;
+
+  it('a listed number gets the demo code (no SMS); it still works only once', async () => {
+    const { otp, challenges } = setup(withDemo);
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    await otp.issue(demoPhone, null);
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('[DEV ONLY]'))).toBe(false); // nothing "sent"
+    expect(lines.some((l) => l.includes(demoCode))).toBe(false); // code never logged
+    expect(challenges.rows[0].codeHash).not.toContain(demoCode); // still only a hash
+
+    await expect(otp.verify(demoPhone, '000000')).rejects.toThrow(
+      'Incorrect code. 4 attempts left.',
+    );
+    await expect(otp.verify(demoPhone, demoCode)).resolves.toBeUndefined();
+    await expect(otp.verify(demoPhone, demoCode)).rejects.toThrow(/expired or was never requested/);
+  });
+
+  it('every other number keeps the normal SMS flow, and the demo code does not work for it', async () => {
+    const { otp, loggedCode } = setup(withDemo);
+    await otp.issue(other, null);
+    const { line, code } = loggedCode();
+    expect(line).toContain('[DEV ONLY]'); // a real (random) code went to the SMS provider
+    expect(otp.isDemoPhone(other)).toBe(false);
+    if (code !== demoCode) {
+      await expect(otp.verify(other, demoCode)).rejects.toThrow(/Incorrect code/);
+    }
+    await expect(otp.verify(other, code!)).resolves.toBeUndefined();
+  });
+
+  it('is off without a code, even if numbers are listed', () => {
+    const noCode = {
+      otp: { ...config.otp, demoPhones: [demoPhone] },
+    } as unknown as AppConfigService;
+    expect(setup(noCode).otp.isDemoPhone(demoPhone)).toBe(false);
+    expect(setup().otp.isDemoPhone(demoPhone)).toBe(false); // default config
   });
 });

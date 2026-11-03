@@ -12,10 +12,15 @@ let signedInName: string | null = null;
 const LINKS = [
   ['/', 'Overview', 'overview'],
   ['/bookings', 'Jobs', 'jobs'],
+  ['/sos', 'SOS', 'alert'],
+  ['/map', 'Live map', 'truck'],
   ['/drivers', 'Drivers & KYC', 'drivers'],
+  ['/customers', 'Customers', 'drivers'],
+  ['/payments', 'Payments', 'money'],
   ['/commissions', 'Commissions', 'money'],
   ['/disputes', 'Disputes', 'disputes'],
   ['/pricing', 'Fares', 'fares'],
+  ['/audit', 'Audit log', 'check'],
 ] as const;
 
 export interface Crumb {

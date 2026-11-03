@@ -768,6 +768,23 @@ export class PaymentsService {
       }
       return this.driverLedger(driverId);
     }
+    // Guard against typos: recording more than is owed silently flips who owes whom.
+    if (!dto.allowExceeding) {
+      const [{ balance }]: { balance: string | null }[] = await this.dataSource.query(
+        'SELECT SUM(amount_fils) AS balance FROM driver_ledger_entries WHERE driver_id = $1',
+        [driverId],
+      );
+      const bal = Number(balance ?? 0);
+      const owed = dto.direction === 'remittance' ? Math.max(0, -bal) : Math.max(0, bal);
+      if (dto.amountFils > owed) {
+        const aed = (f: number) => `AED ${(f / 100).toFixed(2)}`;
+        throw new ConflictException(
+          dto.direction === 'remittance'
+            ? `This remittance (${aed(dto.amountFils)}) is more than the driver owes (${aed(owed)}). Confirm to record it anyway.`
+            : `This payout (${aed(dto.amountFils)}) is more than TowNow owes the driver (${aed(owed)}). Confirm to record it anyway.`,
+        );
+      }
+    }
     const inserted = await this.dataSource
       .createQueryBuilder()
       .insert()

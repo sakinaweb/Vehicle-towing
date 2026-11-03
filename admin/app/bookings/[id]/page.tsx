@@ -5,7 +5,31 @@ import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { ErrorBox, Shell, useLoad } from '../../../components/Shell';
 import { Badge, Kpi, SkeletonRows, useFeedback } from '../../../components/ui';
-import { aed, cancelBooking, errorText, getBooking, when } from '../../../lib/admin';
+import { aed, cancelBooking, errorText, getBooking, getChat, when } from '../../../lib/admin';
+
+/** Customer ↔ driver messages on this job (read-only for operations). */
+function ChatPanel({ bookingId }: { bookingId: string }) {
+  const { data, error } = useLoad(() => getChat(bookingId), [bookingId]);
+  return (
+    <>
+      <h2>Chat</h2>
+      <div className="card" style={{ display: 'grid', gap: 8, maxHeight: 360, overflowY: 'auto' }}>
+        <ErrorBox error={error} />
+        {data?.length === 0 && <span className="muted">No messages on this job.</span>}
+        {data?.map((m) => (
+          <div key={m.id}>
+            <strong style={{ textTransform: 'capitalize' }}>{m.senderRole}</strong>{' '}
+            <span className="muted" style={{ fontSize: 12 }}>
+              {when(m.createdAt)}
+              {m.readAt ? ' · read' : ''}
+            </span>
+            <div>{m.body}</div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
 
 export default function BookingDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -102,6 +126,7 @@ export default function BookingDetailPage() {
                 </div>
                 {data.cancellationReason && <div className="error">Cancelled: {data.cancellationReason}</div>}
               </div>
+              <ChatPanel bookingId={id} />
               {open && (
                 <>
                   <h2>Intervene</h2>

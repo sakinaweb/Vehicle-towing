@@ -158,6 +158,7 @@ export class MatchingService {
           note: 'No tow truck available nearby',
         });
         after.push(() => this.notifyCustomer(customerUserId, booking.id, BookingStatus.Cancelled));
+        after.push(() => this.payments.enqueueRelease(booking.id)); // release any card hold
         return;
       }
 

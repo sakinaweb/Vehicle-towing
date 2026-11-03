@@ -37,6 +37,7 @@ dependencies:
   townow_core:
     path: ../townow_core
   geolocator: ^14.1.1
+  flutter_stripe: 14.2.0
 
 dev_dependencies:
   flutter_test:

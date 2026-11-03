@@ -3,6 +3,7 @@ import 'package:townow_core/townow_core.dart';
 
 import 'screens/bookings_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/payments_screen.dart';
 import 'screens/tracking_screen.dart';
 import 'screens/vehicles_screen.dart';
 import 'widgets.dart';
@@ -216,6 +217,14 @@ class _AccountScreenState extends State<AccountScreen> {
               ),
               const Divider(),
               InfoRow(
+                icon: Icons.receipt_long_rounded,
+                title: 'Payments & receipts',
+                subtitle: 'What you paid for each tow, with VAT and receipts',
+                trailing: const Icon(Icons.chevron_right_rounded, color: TnColors.muted),
+                onTap: () => open(const PaymentsScreen()),
+              ),
+              const Divider(),
+              InfoRow(
                 icon: Icons.support_agent_rounded,
                 title: 'My disputes',
                 subtitle: 'Problems you reported and TowNow\'s decisions',
@@ -245,6 +254,14 @@ class _AccountScreenState extends State<AccountScreen> {
                 title: 'Emergency (Police) 999',
                 subtitle: 'For accidents with injuries or danger on the road',
                 onTap: () => callNumber('999'),
+              ),
+              const Divider(),
+              InfoRow(
+                icon: Icons.sos_rounded,
+                iconColor: TnColors.error,
+                title: 'Send SOS to TowNow',
+                subtitle: 'Alerts our operations team with your location',
+                onTap: () => showSosSheet(context),
               ),
             ],
           ),

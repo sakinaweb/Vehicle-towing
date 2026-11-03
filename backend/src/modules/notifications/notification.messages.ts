@@ -94,6 +94,33 @@ export function messageFor(event: string, raw: unknown): NotificationMessage | n
             body: 'You will not get tow requests until it does. Open TowNow and keep it allowed to run in the background.',
             data: {},
           };
+    case RealtimeEvent.ChatMessage: {
+      if (p.mine) return null; // the sender's own echo
+      const body = str(p.body);
+      return {
+        type: 'chat.message',
+        title: p.senderRole === 'driver' ? 'Message from your driver' : 'Message from the customer',
+        body: body.length > 120 ? `${body.slice(0, 117)}…` : body,
+        data: { bookingId: str(p.bookingId), messageId: str(p.id) },
+      };
+    }
+    case RealtimeEvent.SosNew:
+      return {
+        type: 'sos.new',
+        title: `SOS from a ${str(p.raisedByRole) || 'user'}`,
+        body: `${str(p.raisedByName) || 'Someone'}${p.bookingNumber ? ` (${str(p.bookingNumber)})` : ''} needs help. Open the SOS page now.`,
+        data: { sosId: str(p.id), bookingId: str(p.bookingId) },
+      };
+    case RealtimeEvent.SosUpdated:
+      return {
+        type: `sos.${str(p.status)}`,
+        title: p.status === 'resolved' ? 'SOS resolved' : 'Help is on the way',
+        body:
+          p.status === 'resolved'
+            ? str(p.resolution) || 'TowNow support has closed your SOS.'
+            : 'TowNow support has seen your SOS and is acting on it.',
+        data: { sosId: str(p.id) },
+      };
     default:
       return null;
   }

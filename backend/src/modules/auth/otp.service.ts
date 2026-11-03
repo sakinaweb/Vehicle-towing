@@ -12,7 +12,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Redis } from 'ioredis';
 import { IsNull, MoreThan, Repository } from 'typeorm';
-import { isUaeMobileE164, maskPhone } from '../../common/phone.js';
+import { maskPhone, mobileCountry } from '../../common/phone.js';
 import { AppConfigService } from '../../config/app-config.service.js';
 import { REDIS_CLIENT } from '../../infrastructure/redis/redis.module.js';
 import {
@@ -52,10 +52,26 @@ export class OtpService {
   constructor(
     @InjectRepository(OtpChallenge) private readonly challenges: Repository<OtpChallenge>,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
-    @Inject(SMS_PROVIDER) private readonly sms: SmsProvider,
+    /** Null only with Twilio Verify and no backup provider. */
+    @Inject(SMS_PROVIDER) private readonly sms: SmsProvider | null,
     private readonly config: AppConfigService,
     @Optional() @Inject(OTP_VERIFIER) private readonly verifier: OtpVerifier | null = null,
   ) {}
+
+  onModuleInit(): void {
+    const { demoPhones = [], demoCode } = this.config.otp;
+    if (demoCode && demoPhones.length) {
+      this.logger.warn(
+        `DEMO LOGIN ENABLED for ${demoPhones.length} number(s): ${demoPhones.map(maskPhone).join(', ')} — not for production`,
+      );
+    }
+  }
+
+  /** Demo login: only these exact numbers (DEMO_LOGIN_PHONES, refused in production). */
+  isDemoPhone(phone: string): boolean {
+    const { demoPhones = [], demoCode } = this.config.otp;
+    return !!demoCode && demoPhones.includes(phone);
+  }
 
   async issue(phone: string, ip: string | null): Promise<OtpIssued> {
     const cfg = this.config.otp;
@@ -68,24 +84,48 @@ export class OtpService {
       { expiresAt: new Date() },
     );
 
-    // With Verify, Twilio owns the real code; the local row only tracks expiry/attempts/use,
-    // so its hash is of a random value nobody ever receives.
-    const code = generateOtpCode();
+    // With Verify, Twilio owns the real code and the local row only tracks expiry/attempts/use;
+    // its hash is of a random value nobody receives — unless Verify fails and the backup SMS
+    // delivers exactly that value. Either way the user holds one valid code.
+    // Demo numbers get the configured demo code instead of an SMS; the challenge row is the same,
+    // so expiry, attempt limit, single use and rate limits apply exactly as for everyone else.
+    const demo = this.isDemoPhone(phone);
+    const code = demo ? cfg.demoCode! : generateOtpCode();
     const now = Date.now();
     const challenge = await this.challenges.save(
       this.challenges.create({
         phone,
         codeHash: hashOtp(cfg.secret, phone, code),
         expiresAt: new Date(now + cfg.ttlSeconds * 1000),
+        externalCheck: !!this.verifier && !demo,
         requestIp: ip,
       }),
     );
+    const issued = {
+      expiresAt: challenge.expiresAt,
+      resendAvailableAt: new Date(now + cfg.resendCooldownSeconds * 1000),
+    };
+    if (demo) {
+      this.logger.warn(`DEMO login code issued to ${maskPhone(phone)} (no SMS sent)`);
+      return issued;
+    }
 
     try {
       if (this.verifier) {
-        await this.verifier.start(phone);
-      } else {
-        await this.sms.send({
+        try {
+          await this.verifier.start(phone);
+        } catch (err) {
+          if (!this.sms) throw err;
+          const code = err instanceof SmsDeliveryError ? (err.providerCode ?? 'n/a') : 'n/a';
+          this.logger.warn(
+            `${this.verifier.name} failed for ${maskPhone(phone)} (code=${code}) — using backup ${this.sms.name}`,
+          );
+          await this.challenges.update(challenge.id, { externalCheck: false });
+          challenge.externalCheck = false;
+        }
+      }
+      if (!challenge.externalCheck) {
+        await this.sms!.send({
           to: phone,
           body: `Your TowNow verification code is ${code}. It expires in ${Math.round(cfg.ttlSeconds / 60)} minutes. Never share this code.`,
         });
@@ -102,10 +142,7 @@ export class OtpService {
       );
     }
 
-    return {
-      expiresAt: challenge.expiresAt,
-      resendAvailableAt: new Date(now + cfg.resendCooldownSeconds * 1000),
-    };
+    return issued;
   }
 
   /** Throws on any failure; returns only when the code is correct and now consumed. */
@@ -125,7 +162,7 @@ export class OtpService {
       throw new TooManyRequests('Too many incorrect attempts. Request a new code.', 0);
     }
 
-    if (!(await this.codeIsCorrect(challenge.id, phone, code, challenge.codeHash))) {
+    if (!(await this.codeIsCorrect(challenge, phone, code))) {
       // Atomic increment, so parallel guesses cannot exceed the limit.
       const result = await this.challenges
         .createQueryBuilder()
@@ -153,14 +190,16 @@ export class OtpService {
     }
   }
 
-  /** Local hash comparison, or Twilio Verify's check when configured. */
+  /** Twilio Verify's check when Verify sent this code, otherwise our own hash comparison. */
   private async codeIsCorrect(
-    challengeId: string,
+    challenge: OtpChallenge,
     phone: string,
     code: string,
-    codeHash: string,
   ): Promise<boolean> {
-    if (!this.verifier) return otpMatches(this.config.otp.secret, phone, code, codeHash);
+    const challengeId = challenge.id;
+    if (!this.verifier || !challenge.externalCheck) {
+      return otpMatches(this.config.otp.secret, phone, code, challenge.codeHash);
+    }
     let result;
     try {
       result = await this.verifier.check(phone, code);
@@ -184,9 +223,13 @@ export class OtpService {
     );
   }
 
-  /** Only UAE numbers, plus +91 when DEV_ALLOW_INDIA_PHONES is on (development only). */
+  /** Mobiles of the OTP_COUNTRIES, plus +91 when DEV_ALLOW_INDIA_PHONES is on (development only). */
   private assertPhoneAllowed(phone: string): void {
-    if (isUaeMobileE164(phone) || this.config.otp.devAllowIndiaPhones) return;
+    const { countries, devAllowIndiaPhones } = this.config.otp;
+    const country = mobileCountry(phone);
+    if (country && (countries.includes(country) || (devAllowIndiaPhones && country === 'IN'))) {
+      return;
+    }
     throw new BadRequestException('phone must be a valid UAE mobile number, e.g. 050 123 4567');
   }
 

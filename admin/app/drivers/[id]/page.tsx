@@ -12,6 +12,7 @@ import {
   getKycDocumentFile,
   getKycDriver,
   getLedger,
+  ApiError,
   recordSettlement,
   rejectKyc,
   when,
@@ -210,11 +211,28 @@ export default function DriverPage() {
                         return;
                       }
                       await act(async () => {
-                        await recordSettlement(id, {
+                        const body = {
                           direction: settle.direction,
                           amountFils,
                           reference: settle.reference.trim(),
-                        });
+                        };
+                        try {
+                          await recordSettlement(id, body);
+                        } catch (err) {
+                          // More than is owed: the server explains; record only if the admin insists.
+                          if (!(err instanceof ApiError) || err.status !== 409 || !err.message.includes('Confirm')) throw err;
+                          if (
+                            !(await confirm({
+                              title: 'Amount is more than what is owed',
+                              message: err.message,
+                              confirm: 'Record anyway',
+                              danger: true,
+                            }))
+                          ) {
+                            throw new Error('Not recorded.');
+                          }
+                          await recordSettlement(id, { ...body, allowExceeding: true });
+                        }
                         setSettle({ ...settle, amount: '', reference: '' });
                       }, 'Settlement recorded');
                     }}

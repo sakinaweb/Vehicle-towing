@@ -3,15 +3,34 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:townow_core/townow_core.dart';
 
+import '../payments/card_payment.dart';
 import '../widgets.dart';
 import 'completed_screen.dart';
+
+const _cardStatus = {
+  'pending': 'awaiting payment',
+  'failed': 'payment failed',
+  'authorized': 'held, charged after delivery',
+  'captured': 'paid',
+  'refunded': 'refunded',
+  'cancelled': 'hold released',
+};
+
+/// A card booking that still needs the customer to pay before a driver is matched.
+bool needsCardPayment(Booking b) =>
+    b.paymentMethod != 'cash' &&
+    b.status == 'requested' &&
+    (b.payment == null || b.payment!.status == 'pending' || b.payment!.status == 'failed');
 
 /// Live tow: status from the server (socket push + 10 s poll as a safety net), the driver's
 /// real position and ETA when available, and cancellation while it is still allowed.
 class TrackingScreen extends StatefulWidget {
-  const TrackingScreen({super.key, required this.bookingId});
+  const TrackingScreen({super.key, required this.bookingId, this.payNow = false});
 
   final String bookingId;
+
+  /// Open the card form as soon as the booking loads (right after booking with card).
+  final bool payNow;
 
   @override
   State<TrackingScreen> createState() => _TrackingScreenState();
@@ -23,6 +42,8 @@ class _TrackingScreenState extends State<TrackingScreen> {
   String? _error;
   Timer? _poll;
   final _unsubscribe = <void Function()>[];
+  bool _paying = false;
+  late bool _autoPay = widget.payNow;
 
   @override
   void initState() {
@@ -34,6 +55,9 @@ class _TrackingScreenState extends State<TrackingScreen> {
       }),
       rt.on(RealtimeEvents.tripLocation, (d) {
         if (d['bookingId'] == widget.bookingId) _refreshLocation();
+      }),
+      rt.on(RealtimeEvents.paymentUpdated, (d) {
+        if (d['bookingId'] == widget.bookingId) _refresh();
       }),
     ]);
     _poll = Timer.periodic(const Duration(seconds: 10), (_) => _refresh());
@@ -65,9 +89,23 @@ class _TrackingScreenState extends State<TrackingScreen> {
         return;
       }
       if (b.driver != null && !b.isFinal) _refreshLocation();
+      if (_autoPay) {
+        _autoPay = false;
+        if (needsCardPayment(b)) _pay();
+      }
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     }
+  }
+
+  /// Card form → server status. Closing the form or a decline leaves "Pay now" for a retry.
+  Future<void> _pay() async {
+    if (_paying) return;
+    setState(() => _paying = true);
+    await payByCard(context, widget.bookingId);
+    if (!mounted) return;
+    setState(() => _paying = false);
+    await _refresh();
   }
 
   Future<void> _refreshLocation() async {
@@ -128,7 +166,32 @@ class _TrackingScreenState extends State<TrackingScreen> {
   Widget build(BuildContext context) {
     final b = _booking;
     return Scaffold(
-      appBar: AppBar(title: Text(b?.bookingNumber ?? 'Your tow')),
+      appBar: AppBar(
+        title: Text(b?.bookingNumber ?? 'Your tow'),
+        actions: [
+          if (b?.driver != null)
+            IconButton(
+              key: const Key('open-chat'),
+              tooltip: 'Chat with your driver',
+              icon: const Icon(Icons.chat_bubble_outline_rounded),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => ChatScreen(
+                    bookingId: widget.bookingId,
+                    title: 'Chat with ${b!.driver!.firstName}',
+                    canSend: !b.isFinal,
+                  ),
+                ),
+              ),
+            ),
+          IconButton(
+            key: const Key('open-sos'),
+            tooltip: 'Emergency / SOS',
+            icon: const Icon(Icons.sos_rounded, color: TnColors.error),
+            onPressed: () => showSosSheet(context, bookingId: widget.bookingId),
+          ),
+        ],
+      ),
       body: b == null
           ? (_error == null
                 ? const SkeletonList(count: 3)
@@ -139,6 +202,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
                 children: [
                   _statusHeader(b),
+                  if (needsCardPayment(b)) ...[const SizedBox(height: 14), _payCard(b)],
                   if (b.driver != null && !b.isFinal) ...[
                     const SizedBox(height: 14),
                     _driverCard(b.driver!),
@@ -194,7 +258,10 @@ class _TrackingScreenState extends State<TrackingScreen> {
                             const SizedBox(width: 6),
                             Expanded(
                               child: Text(
-                                'Cash to the driver · incl. VAT ${formatAed(b.fare.vatFils)}',
+                                b.paymentMethod == 'cash'
+                                    ? 'Cash to the driver · incl. VAT ${formatAed(b.fare.vatFils)}'
+                                    : 'Card · ${_cardStatus[b.payment?.status ?? 'pending'] ?? b.payment!.status} · incl. VAT ${formatAed(b.fare.vatFils)}',
+                                key: const Key('payment-line'),
                                 style: const TextStyle(color: TnColors.muted, fontSize: 13),
                               ),
                             ),
@@ -284,13 +351,52 @@ class _TrackingScreenState extends State<TrackingScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  searching
+                  needsCardPayment(b)
+                      ? 'Complete the card payment and we start finding a tow truck.'
+                      : searching
                       ? 'Contacting verified tow trucks near you. This can take a few minutes.'
                       : _location?.etaLabel ?? 'Updating…',
                   style: const TextStyle(color: Colors.white70),
                 ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _payCard(Booking b) {
+    final failed = b.payment?.status == 'failed';
+    return TnCard(
+      key: const Key('pay-card-box'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            failed ? 'Card payment failed' : 'Complete your card payment',
+            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            failed
+                ? (b.payment!.failureReason ?? 'Try again, or use another card.')
+                : 'Your card is held now and charged only after delivery.',
+            style: TextStyle(color: failed ? TnColors.error : TnColors.muted),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Unpaid card bookings are cancelled automatically after 30 minutes.',
+            style: TextStyle(color: TnColors.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          TnButton(
+            key: const Key('pay-now'),
+            label: failed
+                ? 'Try again · ${formatAed(b.fare.totalFils)}'
+                : 'Pay now · ${formatAed(b.fare.totalFils)}',
+            icon: Icons.credit_card_rounded,
+            onPressed: _paying ? null : _pay,
           ),
         ],
       ),

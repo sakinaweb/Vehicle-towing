@@ -27,6 +27,14 @@ export const RealtimeEvent = {
   DisputeUpdated: 'dispute:updated',
   /** Driver: their GPS stopped updating while online ({ setOffline } when they were set offline). */
   DriverLocationStale: 'driver:location_stale',
+  /** Customer/driver of a booking: a chat message (also echoed to the sender's other devices). */
+  ChatMessage: 'chat:message',
+  /** Customer/driver: the other side read the chat up to now ({ bookingId, readAt }). */
+  ChatRead: 'chat:read',
+  /** Admins: someone raised an SOS. */
+  SosNew: 'sos:new',
+  /** Whoever raised the SOS: operations acknowledged or resolved it. */
+  SosUpdated: 'sos:updated',
 } as const;
 
 export const userRoom = (userId: string) => `user:${userId}`;

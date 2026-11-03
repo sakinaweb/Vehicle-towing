@@ -114,7 +114,7 @@ export const getCommissions = () => api.request<CommissionBalance[]>('/admin/com
 export const getLedger = (driverId: string) => api.request<DriverLedger>(`/admin/drivers/${driverId}/ledger`);
 export const recordSettlement = (
   driverId: string,
-  body: { direction: 'remittance' | 'payout'; amountFils: number; reference: string },
+  body: { direction: 'remittance' | 'payout'; amountFils: number; reference: string; allowExceeding?: boolean },
 ) => api.request<DriverLedger>(`/admin/drivers/${driverId}/settlements`, { method: 'POST', body });
 
 // ---------------------------------------------------------------- disputes
@@ -153,3 +153,197 @@ export type TariffInput = Omit<TariffVersion, 'id' | 'vatRateBps' | 'effectiveFr
 export const listTariffs = () => api.request<TariffVersion[]>('/admin/pricing-rules');
 export const publishTariff = (body: TariffInput) =>
   api.request<TariffVersion>('/admin/pricing-rules', { method: 'POST', body });
+
+// ---------------------------------------------------------------- live map, money, audit, SOS, chat
+
+export interface DriverPin {
+  driverId: string;
+  fullName: string | null;
+  phone: string;
+  availability: string;
+  lat: number;
+  lng: number;
+  locationUpdatedAt: string | null;
+  activeBookingNumber: string | null;
+}
+export const getDriverLocations = (all: boolean) =>
+  api.request<DriverPin[]>(`/admin/driver-locations?all=${all}`);
+
+export interface PaymentRow {
+  paymentId: string;
+  bookingId: string;
+  bookingNumber: string;
+  bookingStatus: string;
+  method: string;
+  status: string;
+  amountFils: number;
+  subtotalFils: number | null;
+  vatFils: number | null;
+  driverEarningFils: number | null;
+  commissionFils: number | null;
+  customerPhone: string;
+  customerName: string | null;
+  driverPhone: string | null;
+  driverName: string | null;
+  createdAt: string;
+  capturedAt: string | null;
+  refundedAt: string | null;
+}
+export interface PaymentsPage {
+  totals: {
+    count: number;
+    collectedFils: number;
+    vatFils: number;
+    driverEarningsFils: number;
+    commissionFils: number;
+  };
+  items: PaymentRow[];
+  page: number;
+  limit: number;
+}
+export interface PaymentFilter {
+  method: string;
+  /** YYYY-MM-DD (UAE calendar day) or '' */
+  from: string;
+  to: string;
+}
+const paymentQuery = (f: PaymentFilter) =>
+  `${f.method ? `&method=${f.method}` : ''}${f.from ? `&from=${f.from}` : ''}${f.to ? `&to=${f.to}` : ''}`;
+export const listPayments = (f: PaymentFilter, page: number, limit = 50) =>
+  api.request<PaymentsPage>(`/admin/payments?page=${page}&limit=${limit}${paymentQuery(f)}`);
+
+/** Every payment matching the filter as CSV (all pages; spreadsheet-formula safe). */
+export async function paymentsCsv(f: PaymentFilter): Promise<string> {
+  const rows: PaymentRow[] = [];
+  for (let page = 1; ; page++) {
+    const p = await listPayments(f, page, 200);
+    rows.push(...p.items);
+    if (rows.length >= p.totals.count || p.items.length === 0) break;
+  }
+  const money = (fils: number | null) => (fils == null ? '' : (fils / 100).toFixed(2));
+  const cell = (v: unknown) => {
+    let s = v == null ? '' : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // a spreadsheet must never run it as a formula
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = [
+    'Date (UTC)',
+    'Booking',
+    'Booking status',
+    'Method',
+    'Payment status',
+    'Total AED',
+    'Subtotal AED',
+    'VAT AED',
+    'Driver earning AED',
+    'TowNow commission AED',
+    'Customer',
+    'Driver',
+    'Refunded at',
+  ];
+  const lines = rows.map((r) =>
+    [
+      r.capturedAt ?? r.createdAt,
+      r.bookingNumber,
+      r.bookingStatus,
+      r.method,
+      r.status,
+      money(r.amountFils),
+      money(r.subtotalFils),
+      money(r.vatFils),
+      money(r.driverEarningFils),
+      money(r.commissionFils),
+      r.customerName ?? r.customerPhone,
+      r.driverName ?? r.driverPhone ?? '',
+      r.refundedAt ?? '',
+    ]
+      .map(cell)
+      .join(','),
+  );
+  return [header.join(','), ...lines].join('\r\n');
+}
+
+export interface AuditRow {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  metadata: Record<string, unknown>;
+  ip: string | null;
+  actorPhone: string | null;
+  actorRole: string | null;
+  actorName: string | null;
+  createdAt: string;
+}
+export const listAudit = (action: string, page: number) =>
+  api.request<{ items: AuditRow[]; total: number; page: number; limit: number }>(
+    `/admin/audit-logs?page=${page}&limit=50${action ? `&action=${encodeURIComponent(action)}` : ''}`,
+  );
+
+export interface Sos {
+  id: string;
+  status: 'open' | 'acknowledged' | 'resolved';
+  raisedByRole: 'customer' | 'driver';
+  raisedByPhone: string;
+  raisedByName: string | null;
+  bookingId: string | null;
+  bookingNumber: string | null;
+  lat: number | null;
+  lng: number | null;
+  accuracyMeters: number | null;
+  note: string | null;
+  resolution: string | null;
+  createdAt: string;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+}
+/** No status = everything not yet resolved. */
+export const listSos = (status?: Sos['status']) =>
+  api.request<Sos[]>(`/admin/sos${status ? `?status=${status}` : ''}`);
+export const acknowledgeSos = (id: string) =>
+  api.request<Sos>(`/admin/sos/${id}/acknowledge`, { method: 'POST' });
+export const resolveSos = (id: string, resolution: string) =>
+  api.request<Sos>(`/admin/sos/${id}/resolve`, {
+    method: 'POST',
+    body: resolution ? { resolution } : {},
+  });
+
+export interface ChatMsg {
+  id: string;
+  senderRole: 'customer' | 'driver';
+  body: string;
+  createdAt: string;
+  readAt: string | null;
+}
+export const getChat = (bookingId: string) => api.request<ChatMsg[]>(`/bookings/${bookingId}/messages`);
+
+// ---------------------------------------------------------------- customers, suspension, refunds
+
+export interface CustomerRow {
+  userId: string;
+  customerId: string | null;
+  fullName: string | null;
+  phone: string;
+  email: string | null;
+  status: 'active' | 'suspended';
+  createdAt: string;
+  bookings: number;
+  completedBookings: number;
+  activeBookings: number;
+  spentFils: number;
+  lastBookingAt: string | null;
+}
+export const listCustomers = (q: string, status: '' | 'active' | 'suspended', page: number) =>
+  api.request<{ items: CustomerRow[]; total: number; page: number; limit: number }>(
+    `/admin/customers?page=${page}&limit=50${q ? `&q=${encodeURIComponent(q)}` : ''}${status ? `&status=${status}` : ''}`,
+  );
+export const suspendUser = (userId: string, reason: string) =>
+  api.request<{ status: string; sessionsEnded: number }>(`/admin/users/${userId}/suspend`, {
+    method: 'POST',
+    body: { reason },
+  });
+export const reactivateUser = (userId: string, reason: string) =>
+  api.request<{ status: string }>(`/admin/users/${userId}/reactivate`, { method: 'POST', body: { reason } });
+/** Full refund of a captured card payment (cash is refunded outside the app). */
+export const refundPayment = (paymentId: string, reason: string) =>
+  api.request<unknown>(`/admin/payments/${paymentId}/refund`, { method: 'POST', body: { reason } });

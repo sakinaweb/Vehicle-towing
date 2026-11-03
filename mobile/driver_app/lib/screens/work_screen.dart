@@ -124,10 +124,12 @@ class _WorkScreenState extends State<WorkScreen> {
           if (mounted) context.toast(denied, error: true);
           return;
         }
-        await _reporter.start(); // the API needs a fresh position for matching
       }
       if (!mounted) return;
       final ok = await context.guard(() => context.api.setAvailability(online));
+      // After the server has us online: it refuses positions from offline drivers. Matching
+      // needs a fresh position, so the first fix is sent right away.
+      if (ok != null && online) await _reporter.start();
       if (!online) _reporter.stop();
       if (ok != null && online) await LocationReporter.requestBatteryExemption();
       if (ok != null && mounted) {

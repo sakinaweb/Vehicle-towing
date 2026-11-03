@@ -1,4 +1,5 @@
 import request from 'supertest';
+import { SmsDeliveryError } from '../src/infrastructure/sms/sms-provider.js';
 import type {
   OtpCheckResult,
   OtpVerifier,
@@ -20,8 +21,13 @@ class FakeVerify implements OtpVerifier {
   readonly started: string[] = [];
   private readonly codes = new Map<string, string>();
   checks = 0;
+  failNext = false;
 
   start(phone: string): Promise<void> {
+    if (this.failNext) {
+      this.failNext = false;
+      return Promise.reject(new SmsDeliveryError('Simulated Verify outage', this.name, 60200));
+    }
     this.started.push(phone);
     this.codes.set(phone, String(100000 + this.started.length)); // the "SMS" Twilio would send
     return Promise.resolve();
@@ -103,5 +109,21 @@ describe('OTP sign-in via Twilio Verify (e2e, fake Verify)', () => {
       .send({ phone, code: verify.codeFor(phone), role: 'customer' })
       .expect(429);
     expect(verify.checks - before).toBe(5);
+  });
+
+  it('falls back to the backup SMS when Verify cannot send, and checks that code locally', async () => {
+    const phone = uniquePhone();
+    phones.push(phone);
+    verify.failNext = true;
+    await api().post('/api/v1/auth/otp/request').send({ phone }).expect(202);
+
+    const code = t.sms.lastCode(phone); // delivered by the backup provider
+    const before = verify.checks;
+    const ok = await api()
+      .post('/api/v1/auth/otp/verify')
+      .send({ phone, code, role: 'driver' })
+      .expect(200);
+    expect(ok.body.user).toMatchObject({ phone, role: 'driver' });
+    expect(verify.checks).toBe(before); // Twilio is never asked about a code it didn't send
   });
 });

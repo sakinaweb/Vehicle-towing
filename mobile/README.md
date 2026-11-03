@@ -51,11 +51,62 @@ flutter build apk --debug --target-platform android-arm64 --dart-define=API_BASE
 # → build/app/outputs/flutter-apk/app-debug.apk ; install: adb install -r <apk>
 ```
 
-- Debug builds allow plain HTTP (dev API); release builds are HTTPS-only.
+- Debug builds allow plain HTTP (dev API); release builds are HTTPS-only unless built with
+  `-P CLEARTEXT=true` (LAN test server only — never for a store build).
+
+## Android release (testing) APKs
+
+Release builds sign with `android/key.properties` when it exists (gitignored), else the debug key:
+
+```properties
+storePassword=…
+keyPassword=…
+keyAlias=townow
+storeFile=D:/path/to/upload-keystore.jks
+```
+
+```bash
+cd mobile/customer_app    # or driver_app
+flutter build apk --release -P CLEARTEXT=true --dart-define=API_BASE_URL=http://192.168.1.4:4000/api/v1
+# Production (HTTPS, no CLEARTEXT): --dart-define=API_BASE_URL=https://<api-host>/api/v1
+```
+
+Keep the keystore and its password safe: an installed app only accepts updates signed with the same key.
 - `android/gradle.properties` is tuned for a low-RAM PC (1.5 GB Gradle heap, no daemon). Each build needs
   about **1.3 GB free disk** on the project drive (intermediates) plus ~90 MB for the APK, and ~1.5 GB free RAM.
 - `--target-platform android-arm64` = real phones. For an x86_64 emulator use `android-x64`.
 - Sign-in codes: in development the API logs OTP codes to its console (`SMS_PROVIDER=log`).
+
+## Push notifications (Firebase Cloud Messaging) — setup
+
+The code is complete (token registration + refresh, foreground banner, background/terminated
+notifications, tap → the booking / work screen). Push stays off until Firebase is configured:
+
+1. Firebase console → create a project (e.g. `townow`) → **Add app → Android** twice:
+   `ae.townow.townow_customer` and `ae.townow.townow_driver`. No `google-services.json` is
+   needed — the apps take their config from build defines.
+2. For each app, from *Project settings → Your apps*: `apiKey`, `appId`, `messagingSenderId`,
+   `projectId`. Build each APK with its own values:
+   ```bash
+   flutter build apk --release --dart-define=FIREBASE_API_KEY=… --dart-define=FIREBASE_APP_ID=… \
+     --dart-define=FIREBASE_MESSAGING_SENDER_ID=… --dart-define=FIREBASE_PROJECT_ID=… [API_BASE_URL …]
+   ```
+3. API (`backend/.env`): *Project settings → Service accounts → Generate new private key*, then
+   `PUSH_PROVIDER=fcm`, `FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`, `FCM_PRIVATE_KEY` (keep `\n` escapes).
+   Never commit the key.
+
+Pushed events: new job offer (driver), driver found / on the way / arrived / towing / completed /
+cancelled (customer), chat message (the other side), SOS acknowledged/resolved (raiser), new SOS
+(admins' inbox), KYC result, dispute decision, stale-GPS warning.
+
+## Chat and SOS
+
+- **Chat**: tracking screen (customer, chat icon) and job screen (driver). Live over Socket.IO,
+  15 s refresh fallback; ticks show sending / sent / read, failed sends retry on tap (same client
+  id → stored once). Read-only after the job ends. Operations can read it on the admin job page.
+- **SOS**: the red SOS icon (tracking), the SOS button (driver job) and *Help → Send SOS* (customer).
+  "Call 999" stays first. The alert carries GPS (8 s fix, else last known, else none) and the job,
+  is saved, and reaches every admin live (admin panel → SOS) with acknowledge / resolve.
 
 ## Verify
 

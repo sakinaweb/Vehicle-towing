@@ -36,21 +36,38 @@ extension CustomerApi on ApiClient {
         as Json,
   );
 
-  /// Cash: the customer pays the driver on delivery (the plan's business model).
-  Future<Booking> book({required String quoteId, required String issue, String? notes}) async =>
-      Booking.fromJson(
-        await send(
-              'POST',
-              '/bookings',
-              body: {
-                'quoteId': quoteId,
-                'issue': issue,
-                'paymentMethod': 'cash',
-                if (notes != null && notes.isNotEmpty) 'notes': notes,
-              },
-            )
-            as Json,
-      );
+  /// Cash (default): the customer pays the driver on delivery. Card: the booking waits
+  /// for the card to be authorised (see [paymentSession]) before a driver is matched.
+  Future<Booking> book({
+    required String quoteId,
+    required String issue,
+    String? notes,
+    String paymentMethod = 'cash',
+  }) async => Booking.fromJson(
+    await send(
+          'POST',
+          '/bookings',
+          body: {
+            'quoteId': quoteId,
+            'issue': issue,
+            'paymentMethod': paymentMethod,
+            if (notes != null && notes.isNotEmpty) 'notes': notes,
+          },
+        )
+        as Json,
+  );
+
+  /// Methods new bookings accept right now; cash always, card only when the server has Stripe.
+  Future<List<String>> paymentMethods() async =>
+      (((await send('GET', '/payments/methods')) as Json)['methods'] as List).cast<String>();
+
+  /// Card form data for an unpaid card booking (idempotent: same intent every time).
+  Future<PaymentSession> paymentSession(String bookingId) async =>
+      PaymentSession.fromJson(await send('POST', '/bookings/$bookingId/payment') as Json);
+
+  /// Re-reads the payment from the gateway, in case its webhook is late.
+  Future<PaymentSummary> syncPayment(String bookingId) async =>
+      PaymentSummary.fromJson(await send('POST', '/bookings/$bookingId/payment/sync') as Json);
 
   Future<List<Booking>> bookings({String? status}) async {
     final res = await send('GET', '/bookings', query: {'limit': '50', 'status': ?status}) as Json;
@@ -204,4 +221,44 @@ extension SharedApi on ApiClient {
   );
   Future<List<Dispute>> myDisputes() async =>
       ((await send('GET', '/me/disputes')) as List).cast<Json>().map(Dispute.fromJson).toList();
+
+  // ---- booking chat (customer ↔ its driver)
+  Future<List<ChatMessage>> chatMessages(String bookingId) async =>
+      ((await send('GET', '/bookings/$bookingId/messages')) as List)
+          .cast<Json>()
+          .map(ChatMessage.fromJson)
+          .toList();
+
+  /// [clientId] makes a retry after a lost response safe (stored once).
+  Future<ChatMessage> sendChat(String bookingId, String body, String clientId) async =>
+      ChatMessage.fromJson(
+        await send(
+              'POST',
+              '/bookings/$bookingId/messages',
+              body: {'body': body, 'clientId': clientId},
+            )
+            as Json,
+      );
+  Future<void> markChatRead(String bookingId) => send('POST', '/bookings/$bookingId/messages/read');
+
+  // ---- SOS (sent to TowNow operations; calling 999 stays separate)
+  Future<Json> raiseSos({
+    String? bookingId,
+    double? lat,
+    double? lng,
+    double? accuracyMeters,
+    String? note,
+  }) async =>
+      await send(
+            'POST',
+            '/sos',
+            body: {
+              'bookingId': ?bookingId,
+              'lat': ?lat,
+              'lng': ?lng,
+              'accuracyMeters': ?accuracyMeters,
+              'note': ?note,
+            },
+          )
+          as Json;
 }

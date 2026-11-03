@@ -13,6 +13,11 @@ import { User } from '../../users/entities/user.entity.js';
 /** Customer ↔ driver message, scoped to one booking. */
 @Entity('chat_messages')
 @Index('ix_chat_messages_booking_created', ['bookingId', 'createdAt'])
+// A retried send (same client id) stores the message once.
+@Index('uq_chat_messages_sender_client', ['senderId', 'clientId'], {
+  unique: true,
+  where: '"client_id" IS NOT NULL',
+})
 export class ChatMessage {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -33,6 +38,10 @@ export class ChatMessage {
 
   @Column({ type: 'varchar', length: 1000 })
   body!: string;
+
+  /** Id the app generated for this message, so a retry after a lost response is not stored twice. */
+  @Column({ type: 'uuid', nullable: true })
+  clientId!: string | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   readAt!: Date | null;

@@ -21,6 +21,9 @@ abstract final class TowNowConfig {
     defaultValue: '© OpenStreetMap contributors',
   );
 
+  /// Sign-in countries offered (ISO codes, first = default). Must match the API's OTP_COUNTRIES.
+  static const phoneCountries = String.fromEnvironment('PHONE_COUNTRIES', defaultValue: 'AE');
+
   /// TowNow support line shown in the apps (optional; hidden when not set).
   static const supportPhone = String.fromEnvironment('SUPPORT_PHONE');
 

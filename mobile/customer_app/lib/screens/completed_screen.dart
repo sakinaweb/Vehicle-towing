@@ -113,7 +113,19 @@ class _CompletedScreenState extends State<CompletedScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
                 ),
               ),
-              StatusChip(paid ? 'captured' : 'pending', label: paid ? 'Paid' : 'Due to driver'),
+              if (inv.paymentMethod == 'cash')
+                StatusChip(paid ? 'captured' : 'pending', label: paid ? 'Paid' : 'Due to driver')
+              else
+                // Card: the held amount is captured moments after completion.
+                StatusChip(
+                  inv.paymentStatus ?? 'pending',
+                  label: switch (inv.paymentStatus) {
+                    'captured' => 'Paid',
+                    'refunded' => 'Refunded',
+                    'failed' => 'Payment failed',
+                    _ => 'Charging card',
+                  },
+                ),
             ],
           ),
           const SizedBox(height: 4),
@@ -149,7 +161,11 @@ class _CompletedScreenState extends State<CompletedScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Payment: ${inv.paymentMethod == 'cash' ? 'Cash' : inv.paymentMethod}',
+            'Payment: ${switch (inv.paymentMethod) {
+              'cash' => 'Cash',
+              'card' => 'Card',
+              _ => inv.paymentMethod,
+            }}',
             style: const TextStyle(color: TnColors.muted, fontSize: 13),
           ),
         ],

@@ -75,6 +75,9 @@ export class AppConfigService {
       phoneHourlyLimit: this.get('OTP_PHONE_HOURLY_LIMIT'),
       ipHourlyLimit: this.get('OTP_IP_HOURLY_LIMIT'),
       devAllowIndiaPhones: this.get('DEV_ALLOW_INDIA_PHONES'),
+      countries: this.get('OTP_COUNTRIES'),
+      demoPhones: this.get('DEMO_LOGIN_PHONES'),
+      demoCode: this.get('DEMO_LOGIN_CODE'),
     };
   }
 
@@ -154,6 +157,17 @@ export class AppConfigService {
   get sms() {
     return {
       provider: this.get('SMS_PROVIDER'),
+      backupProvider: this.get('SMS_BACKUP_PROVIDER'),
+      statusCallbackBaseUrl: this.get('SMS_STATUS_CALLBACK_BASE_URL'),
+      infobip: {
+        baseUrl: this.get('INFOBIP_BASE_URL'),
+        apiKey: this.get('INFOBIP_API_KEY'),
+        sender: this.get('INFOBIP_SENDER'),
+      },
+      androidGateway: {
+        baseUrl: this.get('ANDROID_GATEWAY_URL'),
+        apiKey: this.get('ANDROID_GATEWAY_API_KEY'),
+      },
       twilio: {
         accountSid: this.get('TWILIO_ACCOUNT_SID'),
         authToken: this.get('TWILIO_AUTH_TOKEN'),

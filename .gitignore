@@ -7,3 +7,9 @@ coverage/
 .env*
 !.env.example
 .dart_tool/
+
+# Firebase credentials and client config — never commit
+google-services.json
+GoogleService-Info.plist
+*firebase-adminsdk*.json
+firebase.defines.json

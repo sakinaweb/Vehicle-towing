@@ -174,5 +174,142 @@ describe('validateEnv', () => {
     expect(env.OTP_TTL_SECONDS).toBe(300);
     expect(env.OTP_MAX_ATTEMPTS).toBe(5);
     expect(env.JWT_ACCESS_TTL_SECONDS).toBe(900);
+    expect(env.OTP_COUNTRIES).toEqual(['AE']);
+    expect(env.SMS_BACKUP_PROVIDER).toBeUndefined();
+  });
+
+  it('parses OTP_COUNTRIES and refuses unsupported or empty lists', () => {
+    expect(validateEnv({ ...prod, OTP_COUNTRIES: 'ae, IN' }).OTP_COUNTRIES).toEqual(['AE', 'IN']);
+    expect(() => validateEnv({ ...base, OTP_COUNTRIES: 'AE,GB' })).toThrow(/OTP_COUNTRIES/);
+    expect(() => validateEnv({ ...base, OTP_COUNTRIES: ',' })).toThrow(/at least one country/);
+  });
+
+  it('configures Infobip as primary or as the backup, with its credentials', () => {
+    const infobip = {
+      INFOBIP_BASE_URL: 'https://x.api.infobip.com',
+      INFOBIP_API_KEY: 'key',
+      INFOBIP_SENDER: 'TowNow',
+    };
+    expect(
+      validateEnv({ ...prod, SMS_BACKUP_PROVIDER: 'infobip', ...infobip }).SMS_BACKUP_PROVIDER,
+    ).toBe('infobip');
+    expect(() => validateEnv({ ...prod, SMS_BACKUP_PROVIDER: 'infobip' })).toThrow(
+      /INFOBIP_API_KEY is required when SMS_BACKUP_PROVIDER=infobip/,
+    );
+    expect(validateEnv({ ...base, SMS_PROVIDER: 'infobip', ...infobip }).SMS_PROVIDER).toBe(
+      'infobip',
+    );
+    expect(() =>
+      validateEnv({ ...base, SMS_PROVIDER: 'infobip', ...infobip, INFOBIP_BASE_URL: 'http://x' }),
+    ).toThrow(/INFOBIP_BASE_URL must be an https URL/);
+  });
+
+  it('refuses a backup equal to the primary, the log provider as primary, or Verify as backup', () => {
+    expect(() => validateEnv({ ...prod, SMS_BACKUP_PROVIDER: 'twilio' })).toThrow(/must differ/);
+    expect(() =>
+      validateEnv({
+        ...base,
+        SMS_BACKUP_PROVIDER: 'twilio',
+        TWILIO_ACCOUNT_SID: 'AC1',
+        TWILIO_AUTH_TOKEN: 't',
+        TWILIO_SENDER: 'TowNow',
+      }),
+    ).toThrow(/needs a real SMS_PROVIDER/);
+    expect(() => validateEnv({ ...prod, SMS_BACKUP_PROVIDER: 'twilio_verify' })).toThrow(
+      /SMS_BACKUP_PROVIDER/,
+    );
+  });
+
+  describe('demo login', () => {
+    const demo = { DEMO_LOGIN_PHONES: '+971589990411, +971589990422', DEMO_LOGIN_CODE: '482917' };
+
+    it('is off by default', () => {
+      const env = validateEnv(base);
+      expect(env.DEMO_LOGIN_PHONES).toEqual([]);
+      expect(env.DEMO_LOGIN_CODE).toBeUndefined();
+    });
+
+    it('parses the number list outside production', () => {
+      expect(validateEnv({ ...base, ...demo }).DEMO_LOGIN_PHONES).toEqual([
+        '+971589990411',
+        '+971589990422',
+      ]);
+    });
+
+    it('is refused in production — numbers, code, or both', () => {
+      for (const extra of [
+        demo,
+        { DEMO_LOGIN_PHONES: demo.DEMO_LOGIN_PHONES },
+        { DEMO_LOGIN_CODE: demo.DEMO_LOGIN_CODE },
+      ]) {
+        expect(() => validateEnv({ ...prod, ...extra })).toThrow(/not allowed in production/);
+      }
+      expect(validateEnv({ ...prod, DEMO_LOGIN_PHONES: '', DEMO_LOGIN_CODE: '' }).NODE_ENV).toBe(
+        'production',
+      ); // empty values = off
+    });
+
+    it('needs a code, a non-trivial one, and real E.164 numbers', () => {
+      expect(() => validateEnv({ ...base, DEMO_LOGIN_PHONES: '+971589990411' })).toThrow(
+        /DEMO_LOGIN_CODE is required/,
+      );
+      for (const weak of ['000000', '111111', '123456', '654321', '345678']) {
+        expect(() => validateEnv({ ...base, ...demo, DEMO_LOGIN_CODE: weak })).toThrow(
+          /too easy to guess/,
+        );
+      }
+      expect(() => validateEnv({ ...base, ...demo, DEMO_LOGIN_CODE: '12345' })).toThrow(
+        /exactly 6 digits/,
+      );
+      expect(() => validateEnv({ ...base, ...demo, DEMO_LOGIN_PHONES: '0501234567' })).toThrow(
+        /E\.164/,
+      );
+    });
+  });
+
+  describe('android_gateway SMS (free phone gateway)', () => {
+    const gw = { ANDROID_GATEWAY_URL: 'http://192.168.1.20:8080', ANDROID_GATEWAY_API_KEY: 'k' };
+
+    it('works as the primary or as the backup with a LAN address and key', () => {
+      expect(validateEnv({ ...base, SMS_PROVIDER: 'android_gateway', ...gw }).SMS_PROVIDER).toBe(
+        'android_gateway',
+      );
+      expect(
+        validateEnv({ ...prod, SMS_BACKUP_PROVIDER: 'android_gateway', ...gw }).SMS_BACKUP_PROVIDER,
+      ).toBe('android_gateway');
+    });
+
+    it('needs both settings, and only a private-network http address', () => {
+      expect(() =>
+        validateEnv({
+          ...base,
+          SMS_PROVIDER: 'android_gateway',
+          ANDROID_GATEWAY_URL: gw.ANDROID_GATEWAY_URL,
+        }),
+      ).toThrow(/ANDROID_GATEWAY_API_KEY is required/);
+      for (const url of [
+        'http://8.8.8.8:8080', // public internet
+        'https://192.168.1.20:8080',
+        'http://example.com:8080',
+        'http://192.168.1.20', // no port
+      ]) {
+        expect(() =>
+          validateEnv({
+            ...base,
+            SMS_PROVIDER: 'android_gateway',
+            ...gw,
+            ANDROID_GATEWAY_URL: url,
+          }),
+        ).toThrow(/private LAN IP/);
+      }
+      expect(
+        validateEnv({
+          ...base,
+          SMS_PROVIDER: 'android_gateway',
+          ...gw,
+          ANDROID_GATEWAY_URL: 'http://10.0.0.7:8080',
+        }).ANDROID_GATEWAY_URL,
+      ).toBe('http://10.0.0.7:8080');
+    });
   });
 });

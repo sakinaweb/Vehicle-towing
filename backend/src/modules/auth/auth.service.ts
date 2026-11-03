@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable } from '@nestjs/commo
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager } from 'typeorm';
 import { UserRole, UserStatus } from '../../common/enums.js';
+import { maskPhone } from '../../common/phone.js';
 import { AuditService } from '../audit/audit.service.js';
 import { Customer } from '../customers/entities/customer.entity.js';
 import { Driver } from '../drivers/entities/driver.entity.js';
@@ -30,8 +31,18 @@ export class AuthService {
     @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
 
-  requestOtp(phone: string, client: ClientMeta): Promise<OtpIssued> {
-    return this.otp.issue(phone, client.ip);
+  async requestOtp(phone: string, client: ClientMeta): Promise<OtpIssued> {
+    const issued = await this.otp.issue(phone, client.ip);
+    if (this.otp.isDemoPhone(phone)) {
+      await this.audit.record({
+        action: 'auth.demo_code_issued',
+        entityType: 'phone',
+        metadata: { phone: maskPhone(phone) },
+        ip: client.ip,
+        userAgent: client.userAgent,
+      });
+    }
+    return issued;
   }
 
   /**

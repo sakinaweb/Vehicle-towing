@@ -128,4 +128,47 @@ void main() {
     expect(posts, 1); // only the first real fix
     reporter.stop();
   });
+
+  // Regression (POCO M3): a fix refused because the server didn't have the driver online yet
+  // was counted as sent, so nothing reached the server until the driver moved.
+  test('a refused or unsent fix is retried with a fresh one; a silent GPS never blocks start', () async {
+    final now = DateTime.now().toUtc();
+    final geo = FakeGeo()..fixes = [fix(25.1, now.subtract(const Duration(seconds: 40)))];
+    GeolocatorPlatform.instance = geo;
+    var refuse = true;
+    final accepted = <Object?>[];
+    final api = ApiClient(
+      baseUrl: 'http://api/api/v1',
+      sessions: MemorySessionStore()
+        ..current = Session(
+          user: AppUser(id: 'u1', phone: '+971501112233', role: 'driver'),
+          accessToken: 'a',
+          refreshToken: 'r',
+        ),
+      role: 'driver',
+      httpClient: MockClient((req) async {
+        if (refuse) return http.Response('{"message":"Go online to share your location."}', 409);
+        accepted.add((jsonDecode(req.body) as Map<String, dynamic>)['lat']);
+        return http.Response('{}', 200);
+      }),
+    );
+    final reporter = LocationReporter(api);
+    await reporter.start();
+    expect(reporter.running, isTrue);
+    expect(accepted, isEmpty);
+
+    refuse = false;
+    geo.fixes = [fix(25.2, now)];
+    await reporter.heartbeat(); // not blocked by the refused fix
+    expect(accepted, [25.2]);
+    reporter.stop();
+
+    // GPS that never answers: start() returns and reporting is running anyway.
+    final silent = FakeGeo()..fail = TimeoutException('no fix indoors');
+    GeolocatorPlatform.instance = silent;
+    final r2 = LocationReporter(api);
+    await r2.start();
+    expect(r2.running, isTrue);
+    r2.stop();
+  });
 }

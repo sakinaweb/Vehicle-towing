@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { signStripePayload } from '../src/modules/payments/payment.rules.js';
+import { MatchingService } from '../src/modules/dispatch/matching.service.js';
 import { PaymentsService } from '../src/modules/payments/payments.service.js';
 import { FakeStripe } from './support/fake-stripe.js';
 import type { TestApp } from './support/test-app.js';
@@ -398,6 +399,27 @@ describe('Payments, invoices & driver ledger (e2e)', () => {
       cancellationReason: 'Payment was not completed in time',
     });
     expect(b.payment.status).toBe('cancelled');
+  });
+
+  it('releases the card hold when no tow truck is found in time', async () => {
+    const { customer, bookingId } = await book(TOWN.ghayathi, 'card'); // no driver anywhere near
+    const intentId = (await paymentRow(bookingId)).provider_reference as string;
+    await webhook('payment_intent.amount_capturable_updated', stripe.authorize(intentId)).expect(
+      200,
+    );
+    await waitFor(async () => (await paymentRow(bookingId)).status === 'authorized');
+    // The search window is over: the next matching round gives up and cancels.
+    await t.ds.query("UPDATE bookings SET created_at = now() - interval '2 hours' WHERE id = $1", [
+      bookingId,
+    ]);
+    await t.app.get(MatchingService).runMatch(bookingId);
+
+    expect(await getBooking(customer.token, bookingId)).toMatchObject({
+      status: 'cancelled',
+      cancellationReason: 'No tow truck available nearby',
+    });
+    await waitFor(async () => (await paymentRow(bookingId)).status === 'cancelled');
+    expect(stripe.callsTo('POST', `/v1/payment_intents/${intentId}/cancel`)).toHaveLength(1);
   });
 
   // ------------------------------------------------------------------ completion

@@ -7,6 +7,8 @@ export interface TwilioConfig {
   authToken: string;
   /** E.164 number, registered alphanumeric sender ID, or Messaging Service SID (MG…). */
   sender: string;
+  /** Where Twilio posts delivery status (optional). */
+  statusCallbackUrl?: string;
   /** Overridable for tests. */
   baseUrl?: string;
   timeoutMs?: number;
@@ -30,6 +32,7 @@ export class TwilioSmsProvider implements SmsProvider {
     const url = `${this.config.baseUrl ?? 'https://api.twilio.com'}/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Messages.json`;
     const form = new URLSearchParams({ To: message.to, Body: message.body });
     form.set(sender.startsWith('MG') ? 'MessagingServiceSid' : 'From', sender);
+    if (this.config.statusCallbackUrl) form.set('StatusCallback', this.config.statusCallbackUrl);
 
     let response: Response;
     try {

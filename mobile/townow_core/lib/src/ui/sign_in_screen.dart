@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api_client.dart';
+import '../config.dart';
 import '../format.dart';
 import 'design.dart';
 
@@ -15,6 +16,7 @@ class SignInScreen extends StatefulWidget {
     required this.onSignedIn,
     this.subtitle,
     this.icon = Icons.local_shipping_rounded,
+    this.countries,
   });
 
   final ApiClient api;
@@ -23,6 +25,9 @@ class SignInScreen extends StatefulWidget {
   final IconData icon;
   final VoidCallback onSignedIn;
 
+  /// ISO codes offered, first = default. Defaults to --dart-define=PHONE_COUNTRIES.
+  final List<String>? countries;
+
   @override
   State<SignInScreen> createState() => _SignInScreenState();
 }
@@ -30,6 +35,12 @@ class SignInScreen extends StatefulWidget {
 class _SignInScreenState extends State<SignInScreen> {
   final _phone = TextEditingController();
   final _code = TextEditingController();
+  late final List<PhoneCountry> _countries =
+      (widget.countries ?? TowNowConfig.phoneCountries.split(','))
+          .map((c) => phoneCountries[c.trim().toUpperCase()])
+          .whereType<PhoneCountry>()
+          .toList();
+  late PhoneCountry _country = _countries.isEmpty ? phoneCountries['AE']! : _countries.first;
   String? _sentTo;
   String? _error;
   int _resendIn = 0;
@@ -47,6 +58,8 @@ class _SignInScreenState extends State<SignInScreen> {
       await action();
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Something went wrong. Please try again.');
     }
   }
 
@@ -64,9 +77,13 @@ class _SignInScreenState extends State<SignInScreen> {
   }
 
   Future<void> _sendCode() => _run(() async {
-    final phone = normalizeUaeMobile(_phone.text);
+    final phone = _country.normalize(_phone.text);
     if (phone == null) {
-      setState(() => _error = 'Enter a UAE mobile number, e.g. 050 123 4567.');
+      setState(
+        () => _error = _country.iso == 'AE'
+            ? 'Enter a UAE mobile number, e.g. 050 123 4567.'
+            : 'Enter a valid ${_country.name} mobile number, e.g. ${_country.example}.',
+      );
       return;
     }
     await widget.api.requestOtp(phone);
@@ -158,14 +175,14 @@ class _SignInScreenState extends State<SignInScreen> {
           keyboardType: TextInputType.phone,
           autofillHints: const [AutofillHints.telephoneNumber],
           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: 0.5),
-          decoration: const InputDecoration(
-            labelText: 'UAE mobile number',
-            hintText: '50 123 4567',
+          decoration: InputDecoration(
+            labelText: _country.iso == 'AE' ? 'UAE mobile number' : 'Mobile number',
+            hintText: _country.example,
             prefixIcon: Padding(
-              padding: EdgeInsets.only(left: 16, right: 8),
-              child: Text('+971', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              padding: const EdgeInsets.only(left: 16, right: 8),
+              child: _countries.length < 2 ? _dialCode(_country) : _countryPicker(),
             ),
-            prefixIconConstraints: BoxConstraints(minWidth: 0, minHeight: 0),
+            prefixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
           ),
           onSubmitted: (_) => _sendCode(),
         ),
@@ -175,6 +192,27 @@ class _SignInScreenState extends State<SignInScreen> {
       ],
     );
   }
+
+  Widget _dialCode(PhoneCountry c) =>
+      Text(c.dialCode, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700));
+
+  Widget _countryPicker() => DropdownButtonHideUnderline(
+    child: DropdownButton<PhoneCountry>(
+      key: const Key('country'),
+      value: _country,
+      items: [
+        for (final c in _countries)
+          DropdownMenuItem(
+            value: c,
+            child: Semantics(label: c.name, child: _dialCode(c)),
+          ),
+      ],
+      onChanged: (c) => setState(() {
+        _country = c!;
+        _error = null;
+      }),
+    ),
+  );
 
   Widget _codeStep(TextTheme text) {
     return Column(

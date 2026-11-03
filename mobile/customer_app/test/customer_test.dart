@@ -6,8 +6,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:townow_core/townow_core.dart';
+import 'package:townow_customer/payments/card_payment.dart';
 import 'package:townow_customer/screens/completed_screen.dart';
 import 'package:townow_customer/screens/home_screen.dart';
+import 'package:townow_customer/screens/payments_screen.dart';
 import 'package:townow_customer/screens/request_screen.dart';
 import 'package:townow_customer/screens/tracking_screen.dart';
 
@@ -406,5 +408,285 @@ void main() {
     await tester.tap(find.byKey(const Key('submit-rating')));
     await tester.pumpAndSettle();
     expect(find.text('You rated Hamdan 4★'), findsOneWidget);
+  });
+
+  testWidgets('payments & receipts: only tows with a payment, real totals incl. VAT', (
+    tester,
+  ) async {
+    Map<String, dynamic> paid(String id, String number, String method, String status) => {
+      ...booking(status: 'completed', canCancel: false),
+      'id': id,
+      'bookingNumber': number,
+      'payment': {'method': method, 'status': status, 'amountFils': 25328},
+    };
+    final api = ApiClient(
+      baseUrl: 'http://api/api/v1',
+      sessions: MemorySessionStore(),
+      role: 'customer',
+      httpClient: MockClient(
+        (req) async => http.Response(
+          jsonEncode({
+            'items': [
+              paid('p1', 'TN-100501', 'cash', 'captured'),
+              paid('p2', 'TN-100502', 'card', 'captured'),
+              paid('p3', 'TN-100503', 'card', 'refunded'),
+              {
+                ...booking(status: 'searching'),
+                'id': 'n1',
+                'bookingNumber': 'TN-100599',
+              }, // no payment
+            ],
+          }),
+          200,
+        ),
+      ),
+    );
+    await tester.pumpWidget(host(api, const PaymentsScreen()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('TN-100501'), findsOneWidget);
+    expect(find.text('TN-100503'), findsOneWidget);
+    expect(find.text('TN-100599'), findsNothing); // no payment → not listed
+    expect(find.textContaining('Refunded'), findsOneWidget);
+    expect(find.text('2 paid tows'), findsOneWidget); // the refunded one does not count
+    expect(find.text('AED 24.12'), findsOneWidget); // VAT: 2 × 12.06
+    expect(find.textContaining('Cash ·'), findsOneWidget);
+  });
+
+  group('card payments (Stripe test mode)', () {
+    final sheetCalls = <PaymentSession>[];
+    var nextSheet = const SheetOutcome(SheetResult.completed);
+    setUp(() {
+      sheetCalls.clear();
+      nextSheet = const SheetOutcome(SheetResult.completed);
+      cardSheet = (s) async {
+        sheetCalls.add(s);
+        return nextSheet;
+      };
+    });
+
+    Map<String, dynamic> cardBooking(String paymentStatus, {String status = 'requested'}) => {
+      ...booking(status: status),
+      'paymentMethod': 'card',
+      'driver': null,
+      'payment': {
+        'method': 'card',
+        'status': paymentStatus,
+        'amountFils': 25328,
+        'failureReason': paymentStatus == 'failed' ? 'Your card was declined.' : null,
+      },
+    };
+    Map<String, dynamic> session({String key = 'pk_test_abc'}) => {
+      'status': 'pending',
+      'amountFils': 25328,
+      'currency': 'AED',
+      'provider': 'stripe',
+      'clientSecret': 'pi_1_secret_x',
+      'publishableKey': key,
+    };
+    Map<String, dynamic> summary(String status) => {
+      'id': 'p1',
+      'method': 'card',
+      'status': status,
+      'amountFils': 25328,
+      'failureReason': status == 'failed' ? 'Your card was declined.' : null,
+    };
+    Map<String, Object? Function(http.Request)> noDriver() => {
+      'GET /bookings/b1/driver-location': (_) => {
+        'bookingId': 'b1',
+        'status': 'requested',
+        'location': null,
+        'eta': {'target': 'pickup', 'status': 'unavailable', 'reason': 'no_driver'},
+      },
+    };
+    Future<void> settle(WidgetTester tester) async {
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+    }
+
+    testWidgets(
+      'card is offered only when the server accepts it; booking with card opens the form',
+      (tester) async {
+        phone(tester);
+        var paid = false;
+        Map<String, dynamic>? booked;
+        final api = FakeApi({
+          ...noDriver(),
+          'GET /payments/methods': (_) => {
+            'methods': ['cash', 'card', 'apple_pay'],
+          },
+          'GET /customers/me/vehicles': (_) => [booking()['vehicle']],
+          'GET /bookings': (_) => {
+            'items': [booking(status: 'completed', canCancel: false)],
+            'total': 1,
+            'page': 1,
+            'limit': 50,
+          },
+          'GET /availability/nearby': (_) => {'total': 0, 'byTowType': <String, dynamic>{}},
+          'POST /bookings/quotes': (req) {
+            final q = jsonDecode(req.body) as Map<String, dynamic>;
+            return {
+              'quoteId': 'q1',
+              'expiresAt': DateTime.now().add(const Duration(minutes: 15)).toIso8601String(),
+              'vehicleId': 'v1',
+              'towType': q['towType'],
+              'pickup': q['pickup'],
+              'dropoff': q['dropoff'],
+              'distanceMeters': 9100,
+              'estimatedDurationSeconds': 900,
+              'distanceSource': 'straight_line',
+              'fare': booking()['fare'],
+            };
+          },
+          'POST /bookings': (req) {
+            booked = jsonDecode(req.body) as Map<String, dynamic>;
+            return cardBooking('pending');
+          },
+          'GET /bookings/b1': (_) =>
+              paid ? cardBooking('authorized', status: 'searching') : cardBooking('pending'),
+          'POST /bookings/b1/payment': (_) => session(),
+          'POST /bookings/b1/payment/sync': (_) {
+            paid = true;
+            return summary('authorized');
+          },
+        });
+        await tester.pumpWidget(host(api.client(), const RequestScreen()));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.byKey(const Key('use-location')));
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.tap(find.byKey(const Key('pickup-map')));
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.enterText(find.byKey(const Key('pin-lat')), '25.08');
+        await tester.enterText(find.byKey(const Key('pin-lng')), '55.14');
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('use-point')));
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.ensureVisible(find.byKey(const Key('recent-0')));
+        await tester.tap(find.byKey(const Key('recent-0')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        // Cash stays the default; card is a choice.
+        expect(find.text('Cash on delivery'), findsNothing);
+        final cash = tester.widget<ChoiceChip>(find.byKey(const Key('pay-cash')));
+        expect(cash.selected, isTrue);
+        await tester.ensureVisible(find.byKey(const Key('pay-card')));
+        await tester.tap(find.byKey(const Key('pay-card')));
+        await tester.pump();
+        expect(find.text('Your card is held now and charged only after delivery'), findsOneWidget);
+
+        await tester.ensureVisible(find.byKey(const Key('book')));
+        await tester.tap(find.byKey(const Key('book')));
+        await settle(tester);
+        await settle(tester);
+
+        expect(booked, {'quoteId': 'q1', 'issue': 'Breakdown', 'paymentMethod': 'card'});
+        expect(sheetCalls, hasLength(1)); // opened straight away
+        expect(sheetCalls.single.clientSecret, 'pi_1_secret_x');
+        expect(sheetCalls.single.publishableKey, 'pk_test_abc');
+        expect(find.text('Card authorised — you are charged after delivery.'), findsOneWidget);
+        expect(find.textContaining('Card · held, charged after delivery'), findsOneWidget);
+        expect(find.byKey(const Key('pay-now')), findsNothing);
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+
+    testWidgets('closing the form keeps Pay now; a decline shows the reason and Try again', (
+      tester,
+    ) async {
+      phone(tester);
+      var status = 'pending';
+      final api = FakeApi({
+        ...noDriver(),
+        'GET /bookings/b1': (_) => cardBooking(status),
+        'POST /bookings/b1/payment': (_) => session(),
+        'POST /bookings/b1/payment/sync': (_) => summary(status),
+      });
+      await tester.pumpWidget(host(api.client(), const TrackingScreen(bookingId: 'b1')));
+      await settle(tester);
+      expect(sheetCalls, isEmpty); // not opened by itself when just viewing the tow
+      expect(find.text('Complete your card payment'), findsOneWidget);
+      expect(find.textContaining('Complete the card payment'), findsWidgets);
+
+      nextSheet = const SheetOutcome(SheetResult.closed);
+      await tester.tap(find.byKey(const Key('pay-now')));
+      await settle(tester);
+      expect(sheetCalls, hasLength(1));
+      expect(find.text('Payment not completed. Tap Pay now when you are ready.'), findsOneWidget);
+      expect(find.byKey(const Key('pay-now')), findsOneWidget);
+
+      nextSheet = const SheetOutcome(SheetResult.failed, 'Your card was declined.');
+      status = 'failed';
+      await tester.tap(find.byKey(const Key('pay-now')));
+      await settle(tester);
+      expect(sheetCalls, hasLength(2));
+      expect(find.text('Card payment failed'), findsOneWidget);
+      expect(find.text('Your card was declined.'), findsWidgets);
+      expect(find.text('Try again · AED 253.28'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('a live publishable key is refused in this build', (tester) async {
+      phone(tester);
+      final api = FakeApi({
+        ...noDriver(),
+        'GET /bookings/b1': (_) => cardBooking('pending'),
+        'POST /bookings/b1/payment': (_) => session(key: 'pk_live_abc'),
+      });
+      await tester.pumpWidget(host(api.client(), const TrackingScreen(bookingId: 'b1')));
+      await settle(tester);
+      await tester.tap(find.byKey(const Key('pay-now')));
+      await settle(tester);
+      expect(sheetCalls, isEmpty);
+      expect(find.text('Card payments are in test mode only.'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('cash tow still says cash and never shows Pay now', (tester) async {
+      phone(tester);
+      final api = FakeApi({
+        ...noDriver(),
+        'GET /bookings/b1': (_) => {...booking(status: 'requested'), 'driver': null},
+      });
+      await tester.pumpWidget(host(api.client(), const TrackingScreen(bookingId: 'b1')));
+      await settle(tester);
+      expect(find.textContaining('Cash to the driver'), findsOneWidget);
+      expect(find.byKey(const Key('pay-now')), findsNothing);
+      expect(api.calls, isNot(contains('POST /bookings/b1/payment')));
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('card receipt shows Card and Paid', (tester) async {
+      phone(tester);
+      final api = FakeApi({
+        'GET /bookings/b1': (_) => cardBooking('captured', status: 'completed'),
+        'GET /bookings/b1/invoice': (_) => {
+          'invoiceNumber': 'INV-000017',
+          'isTaxInvoice': false,
+          'title': 'Receipt',
+          'notice': null,
+          'issuedAt': '2026-10-11T11:00:00Z',
+          'bookingNumber': 'TN-100400',
+          'seller': {'name': 'TowNow', 'address': null, 'trn': null},
+          'customerName': 'Aisha',
+          'subtotalFils': 24122,
+          'vatRateBps': 500,
+          'vatFils': 1206,
+          'totalFils': 25328,
+          'currency': 'AED',
+          'paymentMethod': 'card',
+          'paymentStatus': 'captured',
+        },
+      });
+      await tester.pumpWidget(host(api.client(), const CompletedScreen(bookingId: 'b1')));
+      await tester.pumpAndSettle();
+      expect(find.text('Payment: Card'), findsOneWidget);
+      expect(find.text('Paid'), findsOneWidget);
+    });
   });
 }

@@ -20,6 +20,10 @@ export class OtpChallenge extends BaseEntity {
   @Column({ type: 'timestamptz', nullable: true })
   consumedAt!: Date | null;
 
+  /** True when Twilio Verify sent the code and must check it; false = our own hash applies. */
+  @Column({ type: 'boolean', default: false })
+  externalCheck!: boolean;
+
   @Column({ type: 'inet', nullable: true })
   requestIp!: string | null;
 }

@@ -265,6 +265,16 @@ void main() {
       expect(normalizeUaeMobile('5012'), isNull);
     });
 
+    test('normalizes Indian mobiles, including national numbers that start with 91', () {
+      final india = phoneCountries['IN']!;
+      expect(india.normalize('+91 98765 43210'), '+919876543210');
+      expect(india.normalize('0091-98765-43210'), '+919876543210');
+      expect(india.normalize('098765 43210'), '+919876543210');
+      expect(india.normalize('91234 56789'), '+919123456789'); // not mistaken for +91
+      expect(india.normalize('58765 43210'), isNull); // not a mobile range
+      expect(india.normalize('050 123 4567'), isNull); // a UAE number
+    });
+
     test('tow type fit mirrors the API rule', () {
       expect(towTypeFits('car', 'flatbed'), isTrue);
       expect(towTypeFits('car', 'bike-carrier'), isFalse);

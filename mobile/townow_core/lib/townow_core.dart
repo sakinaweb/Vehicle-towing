@@ -13,4 +13,6 @@ export 'src/ui/app_scope.dart';
 export 'src/ui/design.dart';
 export 'src/ui/inbox_screen.dart';
 export 'src/ui/map_view.dart';
+export 'src/ui/chat_screen.dart';
 export 'src/ui/sign_in_screen.dart';
+export 'src/ui/sos_sheet.dart';

@@ -80,14 +80,13 @@ class LocationReporter {
 
   Future<void> start() async {
     if (running) return;
-    final first = await Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-    );
-    await _send(first);
+    // Stream and heartbeat first: a slow first fix (indoors it can take minutes) must never
+    // keep reporting from starting.
     _sub = Geolocator.getPositionStream(locationSettings: streamSettings)
         .listen(_send, onError: (_) {});
     // Standing still produces no stream events; take a fresh fix instead of re-sending an old one.
     _heartbeat = Timer.periodic(const Duration(seconds: 30), (_) => heartbeat());
+    await heartbeat(); // the first position right away (bounded by the heartbeat's time limit)
   }
 
   /// When the stream has been quiet, asks for one fresh fix. If none comes, nothing is sent:
@@ -128,8 +127,13 @@ class LocationReporter {
         heading: p.heading >= 0 ? p.heading : null,
         recordedAt: p.timestamp,
       );
-    } on ApiException {
-      // Throttled, too old or offline: the next real fix is sent anyway.
+    } on ApiException catch (e) {
+      // No network, or not online on the server yet: this fix didn't land, so don't count it —
+      // the next heartbeat takes a fresh one instead of waiting for the driver to move.
+      if (e.status == 0 || e.isConflict) {
+        if (identical(_last, p)) _last = last;
+      }
+      // Throttled or too old: the next real fix is sent anyway.
     }
   }
 

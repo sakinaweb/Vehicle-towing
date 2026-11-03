@@ -128,6 +128,9 @@ export async function deleteUsersByPhone(ds: DataSource, phones: string[]): Prom
           [ids],
         );
       }
+      // SOS alerts and chat messages reference their author with RESTRICT.
+      await em.query('DELETE FROM sos_alerts WHERE raised_by_id = ANY($1)', [ids]);
+      await em.query('DELETE FROM chat_messages WHERE sender_id = ANY($1)', [ids]);
       // Bookings reference customers/vehicles with RESTRICT, so they go first (history cascades).
       await em.query(
         'DELETE FROM bookings WHERE customer_id IN (SELECT id FROM customers WHERE user_id = ANY($1))',

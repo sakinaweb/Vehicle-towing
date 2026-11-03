@@ -77,9 +77,26 @@ Customers and drivers sign in with their UAE mobile number and a 6-digit SMS cod
 - **OTP**: CSPRNG codes, stored only as HMAC-SHA256 with `OTP_SECRET`; 5-minute expiry, 5 attempts,
   single use, newest code only; 30 s resend cooldown and per-number / per-IP hourly limits.
 - **SMS**: `SMS_PROVIDER=log` prints messages to the API log (development only — refused in production);
-  `SMS_PROVIDER=twilio` sends real SMS with `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_SENDER`.
-  New gateways implement `SmsProvider` (`src/infrastructure/sms`).
+  `SMS_PROVIDER=twilio` sends real SMS with `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_SENDER`;
+  `twilio_verify` and `infobip` are also available. `SMS_BACKUP_PROVIDER` (twilio | infobip) takes over
+  automatically when the primary fails, delivering the same locally generated code (with Verify as
+  primary, the backup's code is checked locally, never by Twilio). `OTP_COUNTRIES` (AE, IN) picks which
+  countries' mobiles may sign in. With `SMS_STATUS_CALLBACK_BASE_URL` set, Twilio (signature-checked)
+  and Infobip (secret path token) delivery reports are logged under `SMS:status`.
+  A Twilio **trial** account only delivers to verified numbers — upgrade it (and register a UAE sender
+  ID) for production. New gateways implement `SmsProvider` (`src/infrastructure/sms`).
 - Sign-ins, sign-outs and refresh-token reuse are written to `audit_logs`.
+
+## Chat, SOS & admin insights
+
+- **Chat** (`/bookings/:id/messages`, `…/read`): customer ↔ assigned driver while the job is
+  active (read-only before/after); admins can read. Socket events `chat:message`, `chat:read`;
+  the recipient also gets an inbox entry/push. An app-generated `clientId` makes retries idempotent.
+- **SOS** (`POST /sos`, `GET /me/sos`, `GET /admin/sos`, `POST /admin/sos/:id/acknowledge|resolve`):
+  stored in `sos_alerts` with optional GPS + job, audited (`sos.*`), every active admin alerted via
+  `sos:new` (+ inbox), the raiser told via `sos:updated`.
+- **Admin** read-only views: `GET /admin/driver-locations` (live map), `GET /admin/payments`
+  (VAT, driver earning, commission = subtotal − driver earning), `GET /admin/audit-logs`.
 
 ## Vehicles, pricing & bookings
 

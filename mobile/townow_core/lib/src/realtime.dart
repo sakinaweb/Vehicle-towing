@@ -70,4 +70,7 @@ abstract final class RealtimeEvents {
   static const tripLocation = 'trip:location';
   static const paymentUpdated = 'payment:updated';
   static const disputeUpdated = 'dispute:updated';
+  static const chatMessage = 'chat:message';
+  static const chatRead = 'chat:read';
+  static const sosUpdated = 'sos:updated';
 }

@@ -1,5 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsInt, IsString, Matches, MaxLength, Min, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  Min,
+  MinLength,
+} from 'class-validator';
 import { LedgerEntryType, PaymentMethod, PaymentStatus } from '../../common/enums.js';
 
 /** Payment state shown on a booking. Never contains gateway secrets. */
@@ -111,6 +121,13 @@ export class SettlementDto {
     message: 'reference must be 3–80 letters, digits or . _ / -',
   })
   reference!: string;
+
+  @ApiPropertyOptional({
+    description: 'Confirm recording more than is currently owed (the balance then flips sides)',
+  })
+  @IsOptional()
+  @IsBoolean()
+  allowExceeding?: boolean;
 }
 
 export class CommissionBalanceView {

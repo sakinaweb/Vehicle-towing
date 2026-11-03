@@ -95,6 +95,40 @@ class _JobScreenState extends State<JobScreen> {
               label: toPickup ? 'Navigate to pickup' : 'Navigate to drop-off',
               onPressed: () => navigateTo(toPickup ? job.pickup : job.dropoff),
             ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  key: const Key('open-chat'),
+                  style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => ChatScreen(
+                        bookingId: job.bookingId,
+                        title: 'Chat with ${job.customerFirstName}',
+                        canSend: job.status != 'completed' && job.status != 'cancelled',
+                      ),
+                    ),
+                  ),
+                  icon: const Icon(Icons.chat_bubble_outline_rounded),
+                  label: Text('Chat with ${job.customerFirstName}'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                key: const Key('open-sos'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: TnColors.error,
+                  side: const BorderSide(color: TnColors.error),
+                  minimumSize: const Size(0, 48),
+                ),
+                onPressed: () => showSosSheet(context, bookingId: job.bookingId),
+                icon: const Icon(Icons.sos_rounded),
+                label: const Text('SOS'),
+              ),
+            ],
+          ),
           const SectionTitle('Job'),
           TnCard(
             child: Column(

@@ -3,6 +3,7 @@ import { plainToInstance, Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -19,7 +20,21 @@ export enum SmsProviderName {
   Twilio = 'twilio',
   /** Twilio Verify: Twilio generates, sends and checks the code. */
   TwilioVerify = 'twilio_verify',
+  /** Infobip SMS API (UAE coverage, TDRA-registered sender IDs). Sends our own code. */
+  Infobip = 'infobip',
+  /** Free: an Android phone on the LAN running an SMS-gateway app sends from its own SIM. */
+  AndroidGateway = 'android_gateway',
 }
+
+/** Providers that can deliver our own code as the backup when the primary fails. */
+export const BACKUP_SMS_PROVIDERS = [
+  SmsProviderName.Twilio,
+  SmsProviderName.Infobip,
+  SmsProviderName.AndroidGateway,
+];
+
+/** Countries whose mobiles can sign in (ISO 3166 alpha-2); number rules live in common/phone.ts. */
+export const OTP_COUNTRY_CODES = ['AE', 'IN'];
 
 export enum StorageProviderName {
   Local = 'local',
@@ -211,14 +226,74 @@ export class EnvironmentVariables {
   @IsBoolean()
   DEV_ALLOW_INDIA_PHONES: boolean = false;
 
+  /**
+   * Countries whose mobile numbers may sign in, comma-separated ISO codes (default UAE only).
+   * Each one adds SMS-pumping exposure and may need sender registration with the SMS provider.
+   */
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string'
+      ? value
+          .split(',')
+          .map((c) => c.trim().toUpperCase())
+          .filter(Boolean)
+      : value,
+  )
+  @IsIn(OTP_COUNTRY_CODES, {
+    each: true,
+    message: `OTP_COUNTRIES may only contain ${OTP_COUNTRY_CODES.join(', ')}`,
+  })
+  OTP_COUNTRIES: string[] = ['AE'];
+
+  /**
+   * DEMO ONLY (never production): these exact E.164 numbers get DEMO_LOGIN_CODE instead of an SMS.
+   * Every other number keeps the normal SMS flow. Empty (the default) = demo login off.
+   */
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string'
+      ? value
+          .split(',')
+          .map((p) => p.trim())
+          .filter(Boolean)
+      : value,
+  )
+  @Matches(/^\+[1-9]\d{7,14}$/, {
+    each: true,
+    message: 'DEMO_LOGIN_PHONES must be comma-separated E.164 numbers, e.g. +971501234567',
+  })
+  DEMO_LOGIN_PHONES: string[] = [];
+
+  /** The 6-digit code for DEMO_LOGIN_PHONES. Keep it out of source control and the apps. */
+  @IsOptional()
+  @Matches(/^\d{6}$/, { message: 'DEMO_LOGIN_CODE must be exactly 6 digits' })
+  DEMO_LOGIN_CODE?: string;
+
   // ---- SMS delivery ----
 
   /**
    * "log" prints messages to the server log (development only); "twilio" sends our own code via
-   * Programmable Messaging; "twilio_verify" lets Twilio Verify issue and check the code.
+   * Programmable Messaging; "twilio_verify" lets Twilio Verify issue and check the code;
+   * "infobip" sends our own code via Infobip.
    */
   @IsEnum(SmsProviderName)
   SMS_PROVIDER: SmsProviderName = SmsProviderName.Log;
+
+  /**
+   * Optional second provider, used automatically when the primary refuses or is unreachable.
+   * It delivers the same locally generated code, so a user never holds two conflicting codes.
+   */
+  @IsOptional()
+  @IsIn(BACKUP_SMS_PROVIDERS)
+  SMS_BACKUP_PROVIDER?: SmsProviderName;
+
+  /**
+   * Public API base (e.g. https://api.townow.ae/api/v1). When set, providers report delivery
+   * status to /sms/status/… under it, so carrier-side failures show up in the API log.
+   */
+  @IsOptional()
+  @Matches(/^https:\/\/\S+[^/]$/, {
+    message: 'SMS_STATUS_CALLBACK_BASE_URL must be an https URL without a trailing slash',
+  })
+  SMS_STATUS_CALLBACK_BASE_URL?: string;
 
   @IsOptional()
   @IsString()
@@ -253,6 +328,39 @@ export class EnvironmentVariables {
   /** Override only for tests (a local fake Verify API). */
   @IsString()
   TWILIO_VERIFY_BASE_URL: string = 'https://verify.twilio.com';
+
+  // Infobip (SMS_PROVIDER or SMS_BACKUP_PROVIDER = infobip)
+  /** Your account's API base from the Infobip portal, e.g. https://xxxxx.api.infobip.com */
+  @IsOptional()
+  @Matches(/^https:\/\/\S+[^/]$/, {
+    message: 'INFOBIP_BASE_URL must be an https URL without a trailing slash',
+  })
+  INFOBIP_BASE_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  INFOBIP_API_KEY?: string;
+
+  /** Registered sender ID (UAE: TDRA-approved alphanumeric) or number. */
+  @IsOptional()
+  @IsString()
+  INFOBIP_SENDER?: string;
+
+  // Android SMS gateway phone (SMS_PROVIDER or SMS_BACKUP_PROVIDER = android_gateway)
+  /** The phone's address on the LOCAL network only — its API key travels unencrypted. */
+  @IsOptional()
+  @Matches(
+    /^http:\/\/(localhost|127\.0\.0\.1|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}):\d{2,5}$/,
+    {
+      message:
+        'ANDROID_GATEWAY_URL must be http://<private LAN IP>:<port>, e.g. http://192.168.1.20:8080',
+    },
+  )
+  ANDROID_GATEWAY_URL?: string;
+
+  @IsOptional()
+  @IsString()
+  ANDROID_GATEWAY_API_KEY?: string;
 
   // ---- Dispatch / matching ----
 
@@ -395,10 +503,39 @@ function crossFieldErrors(env: EnvironmentVariables): string[] {
   if (env.DEV_ALLOW_INDIA_PHONES && env.SMS_PROVIDER !== SmsProviderName.Log) {
     errors.push('DEV_ALLOW_INDIA_PHONES requires SMS_PROVIDER=log');
   }
-  if (env.SMS_PROVIDER === SmsProviderName.Twilio) {
-    for (const key of ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_SENDER'] as const) {
-      if (!env[key]) errors.push(`${key} is required when SMS_PROVIDER=twilio`);
+  for (const [setting, name] of [
+    ['SMS_PROVIDER', env.SMS_PROVIDER],
+    ['SMS_BACKUP_PROVIDER', env.SMS_BACKUP_PROVIDER],
+  ] as const) {
+    const keys =
+      name === SmsProviderName.Twilio
+        ? (['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_SENDER'] as const)
+        : name === SmsProviderName.Infobip
+          ? (['INFOBIP_BASE_URL', 'INFOBIP_API_KEY', 'INFOBIP_SENDER'] as const)
+          : name === SmsProviderName.AndroidGateway
+            ? (['ANDROID_GATEWAY_URL', 'ANDROID_GATEWAY_API_KEY'] as const)
+            : [];
+    for (const key of keys) {
+      if (!env[key]) errors.push(`${key} is required when ${setting}=${name}`);
     }
+  }
+  if (!env.OTP_COUNTRIES.length) errors.push('OTP_COUNTRIES must list at least one country');
+  if (env.DEMO_LOGIN_PHONES.length) {
+    const code = env.DEMO_LOGIN_CODE;
+    if (!code) errors.push('DEMO_LOGIN_CODE is required when DEMO_LOGIN_PHONES is set');
+    else if (
+      /^(\d)\1{5}$/.test(code) ||
+      '0123456789'.includes(code) ||
+      '9876543210'.includes(code)
+    ) {
+      errors.push('DEMO_LOGIN_CODE is too easy to guess; use random digits');
+    }
+  }
+  if (env.SMS_BACKUP_PROVIDER && env.SMS_BACKUP_PROVIDER === env.SMS_PROVIDER) {
+    errors.push('SMS_BACKUP_PROVIDER must differ from SMS_PROVIDER');
+  }
+  if (env.SMS_BACKUP_PROVIDER && env.SMS_PROVIDER === SmsProviderName.Log) {
+    errors.push('SMS_BACKUP_PROVIDER needs a real SMS_PROVIDER (not log)');
   }
   if (env.PAYMENT_PROVIDER === PaymentProviderName.Stripe) {
     for (const key of [
@@ -466,12 +603,17 @@ function crossFieldErrors(env: EnvironmentVariables): string[] {
     if (!env.COOKIE_SECURE) errors.push('COOKIE_SECURE must be true in production');
     if (env.DEV_ALLOW_INDIA_PHONES)
       errors.push('DEV_ALLOW_INDIA_PHONES is not allowed in production');
+    if (env.DEMO_LOGIN_PHONES.length || env.DEMO_LOGIN_CODE) {
+      errors.push('Demo login (DEMO_LOGIN_PHONES / DEMO_LOGIN_CODE) is not allowed in production');
+    }
   }
   return errors;
 }
 
 export function validateEnv(config: Record<string, unknown>): EnvironmentVariables {
-  const validated = plainToInstance(EnvironmentVariables, config, {
+  // `KEY=` in a .env file arrives as '' — treat it as unset so @IsOptional() fields stay optional.
+  const set = Object.fromEntries(Object.entries(config).filter(([, v]) => v !== ''));
+  const validated = plainToInstance(EnvironmentVariables, set, {
     enableImplicitConversion: true,
     exposeDefaultValues: true,
   });

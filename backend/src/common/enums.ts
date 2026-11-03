@@ -182,6 +182,13 @@ export enum DisputeStatus {
   Rejected = 'rejected',
 }
 
+export enum SosStatus {
+  Open = 'open',
+  /** Operations has seen it and is acting. */
+  Acknowledged = 'acknowledged',
+  Resolved = 'resolved',
+}
+
 export enum DevicePlatform {
   Android = 'android',
   Ios = 'ios',

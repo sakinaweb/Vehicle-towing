@@ -32,6 +32,12 @@ export default defineConfig({
       ROUTING_PROVIDER: 'none',
       // Never reach a real SMS/Verify provider from tests, whatever .env says.
       SMS_PROVIDER: 'log',
+      // Never reach real Stripe from tests, whatever .env says: specs that need card payments
+      // set PAYMENT_PROVIDER and a FakeStripe base URL themselves (payments.e2e-spec.ts).
+      PAYMENT_PROVIDER: 'none',
+      STRIPE_SECRET_KEY: '',
+      STRIPE_PUBLISHABLE_KEY: '',
+      STRIPE_WEBHOOK_SECRET: '',
     },
   },
 });
